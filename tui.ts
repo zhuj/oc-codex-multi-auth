@@ -64,20 +64,20 @@ import type { UiGlyphMode } from "./lib/ui/theme.js";
 export { protectQuotaStatusSlot } from "./lib/tui-status-slot.js";
 
 const CACHE_KEY = "oc-codex-multi-auth:tui-status:v2";
-const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const EVENT_REFRESH_DEBOUNCE_MS = 750;
-const ACCOUNT_POLL_INTERVAL_MS = 1_000;
+const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const EVENT_REFRESH_DEBOUNCE_MS = 2_500;
+const ACCOUNT_POLL_INTERVAL_MS = 10_000;
 // The status line is the one surface that reads this configuration once and
 // then renders it for the rest of the session, so it is the only one where an
 // edit would otherwise need a restart to be seen. `loadPluginConfig` already
 // re-reads the file on every call and only skips re-parsing when the bytes are
 // unchanged, so polling it costs one read of a file measured in hundreds of
 // bytes.
-const CONFIG_POLL_INTERVAL_MS = 2_000;
+const CONFIG_POLL_INTERVAL_MS = 15_000;
 // Re-reading three numbers off the laid-out node, which is cheap enough to do
 // often and has to be: the first pass happens before any layout exists, and
 // until it is picked up the line is budgeting against the whole terminal.
-const LAYOUT_MEASURE_INTERVAL_MS = 500;
+const LAYOUT_MEASURE_INTERVAL_MS = 2_500;
 
 type StoredQuotaStatus = TuiQuotaSnapshot;
 
