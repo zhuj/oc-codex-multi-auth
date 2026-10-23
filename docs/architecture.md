@@ -8,7 +8,7 @@ Public overview of how the plugin installs config, handles ChatGPT Plus/Pro OAut
 
 - `oc-codex-multi-auth` is an OpenCode plugin. Its npm bin is an installer plus a small standalone CLI, not a replacement for OpenCode.
 - OpenCode loads `dist/index.js` as the provider plugin (built from `index.ts`) and `dist/tui.js` as the TUI quota-status plugin (built from `tui.ts`). On OpenCode 2.0.16+, the same default exports also carry a V2 `setup` hook (`lib/opencode-v2*.ts`) that reuses the shared V1 runtime.
-- The plugin registers **25** `codex-*` tools via **25 per-file factories** under `lib/tools/` (`codex-list`, `codex-switch`, `codex-warm`, and 22 others).
+- The plugin registers **26** `codex-*` tools via **26 per-file factories** under `lib/tools/` (`codex-list`, `codex-switch`, `codex-account-enabled`, `codex-warm`, and 22 others).
 - Requests to the ChatGPT-backed Codex API stay stateless: `store: false`, `stream: true`, and `reasoning.encrypted_content`.
 - GPT-6 Astra/Sol/Luna, GPT-6.1 Sol/Terra, the Daybreak tiers, and GPT-5.6 use the responses-lite request shape; other models keep the classic shape.
 - Account, config, backup, log, and quota state stays local under `~/.opencode` and `~/.config/opencode`. Per-project account pools are on by default.
@@ -90,7 +90,7 @@ Auth methods exposed to OpenCode are the **four OAuth labels only**: default bro
 
 ### Tool registry
 
-`lib/tools/index.ts` builds the tool map from **25 per-file factories** under `lib/tools/`; every registered `codex-*` tool is its own file. Groups: setup (`codex-setup`, `codex-help`, `codex-next`), daily account use (`codex-list`, `codex-switch`, `codex-warm`, `codex-status`, `codex-limits`, `codex-reset`), metadata and routing (`codex-label`, `codex-tag`, `codex-note`, `codex-pool`, `codex-enable`, `codex-remove`, `codex-refresh`), diagnostics (`codex-health`, `codex-metrics`, `codex-doctor`, `codex-diag`, `codex-diff`), backup/secrets (`codex-export`, `codex-import`, `codex-keychain`), and the interactive `codex-dashboard`. Full catalog: [tools-and-cli.md](tools-and-cli.md).
+`lib/tools/index.ts` builds the tool map from **26 per-file factories** under `lib/tools/`; every registered `codex-*` tool is its own file. Groups: setup (`codex-setup`, `codex-help`, `codex-next`), daily account use (`codex-list`, `codex-switch`, `codex-account-enabled`, `codex-warm`, `codex-status`, `codex-limits`, `codex-reset`), metadata and routing (`codex-label`, `codex-tag`, `codex-note`, `codex-pool`, `codex-enable`, `codex-remove`, `codex-refresh`), diagnostics (`codex-health`, `codex-metrics`, `codex-doctor`, `codex-diag`, `codex-diff`), backup/secrets (`codex-export`, `codex-import`, `codex-keychain`), and the interactive `codex-dashboard`. Full catalog: [tools-and-cli.md](tools-and-cli.md).
 
 ### TUI quota plugin (`tui.ts`)
 

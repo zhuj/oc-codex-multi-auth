@@ -6,7 +6,7 @@ The complete documentation set for `oc-codex-multi-auth`. New here? Read [index.
 
 - [index.md](index.md) — product overview: what it does at runtime and who needs it
 - [getting-started.md](getting-started.md) — install, login methods, first prompt
-- [tools-and-cli.md](tools-and-cli.md) — all 25 `codex-*` tools and the standalone commands
+- [tools-and-cli.md](tools-and-cli.md) — all 26 `codex-*` tools and the standalone commands
 - [configuration.md](configuration.md) — plugin config keys and environment variables
 - [plan-allotments.md](plan-allotments.md) — how plan weights shape the pool quota total
 - [upgrade.md](upgrade.md) — version upgrades and retired-name migration

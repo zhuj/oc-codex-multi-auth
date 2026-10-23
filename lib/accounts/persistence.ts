@@ -18,7 +18,12 @@ import {
 import { getWorkspaceIdentityKey } from "../storage/identity.js";
 import { nowMs } from "../utils.js";
 import { clampNonNegativeInt } from "./rate-limits.js";
-import { hasMissingScopeReauthNote, type AccountState, type ManagedAccount } from "./state.js";
+import {
+	hasMissingScopeReauthNote,
+	isPersistedUserDisabled,
+	type AccountState,
+	type ManagedAccount,
+} from "./state.js";
 
 const log = createLogger("accounts");
 
@@ -56,6 +61,12 @@ export class AccountPersistence {
 	}
 
 	async saveToDisk(repairScopes = false): Promise<void> {
+		const userDisabledBaselineByIdentity = new Map(
+			this.state.accounts.map((account) => [
+				getWorkspaceIdentityKey(account),
+				this.state.getUserDisabledBaseline(account),
+			]),
+		);
 		const activeIndexByFamily: Partial<Record<ModelFamily, number>> = {};
 		for (const family of MODEL_FAMILIES) {
 			const raw = this.state.currentAccountIndexByFamily[family];
@@ -82,6 +93,7 @@ export class AccountPersistence {
 				oauthScope: account.oauthScope,
 				tokenRotatedAt: account.tokenRotatedAt,
 				enabled: account.enabled === false ? false : undefined,
+				userDisabled: account.userDisabled || account.enabled === false ? account.userDisabled : undefined,
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,
 				lastSwitchReason: account.lastSwitchReason,
@@ -130,6 +142,11 @@ export class AccountPersistence {
 				// account matches.
 				this.applyDiskQuotaClearTombstones(storage, current);
 				this.adoptLongerDiskRateLimits(storage, current);
+				this.adoptNewerDiskUserPreferences(
+					storage,
+					current,
+					userDisabledBaselineByIdentity,
+				);
 				this.adoptNewerDiskCredentials(storage, current);
 				const mineByIdentity = new Map(
 					storage.accounts.map((account) => [getWorkspaceIdentityKey(account), account]),
@@ -152,13 +169,19 @@ export class AccountPersistence {
 						getWorkspaceIdentityKey(account),
 					);
 					if (disabledToken !== undefined && disabledToken === account.refreshToken) {
-						return { ...mine, enabled: false };
+						return { ...mine, enabled: false, userDisabled: mine.userDisabled ?? false };
+					}
+					// Preference changes are independent of credential repair. Keep a
+					// local toggle, but never let it bypass a temporary disk disable.
+					if (mine.userDisabled === true) return { ...mine, enabled: false, accountNote: account.accountNote };
+					if (isPersistedUserDisabled(account)) {
+						return { ...mine, accountNote: account.accountNote };
 					}
 					if (repairScopes && account.enabled === false &&
 						hasMissingScopeReauthNote(account.accountNote) && mine.enabled !== false) {
 						return { ...mine, enabled: true, accountNote: mine.accountNote };
 					}
-					return { ...mine, enabled: account.enabled, accountNote: account.accountNote };
+					return { ...mine, enabled: account.enabled, userDisabled: account.enabled === false ? false : mine.userDisabled, accountNote: account.accountNote };
 				});
 				// Membership comes from disk, but accounts this manager added in
 				// memory are additions, not removals-in-waiting: append whichever
@@ -185,6 +208,42 @@ export class AccountPersistence {
 			this.pendingDisabledAccounts.clear();
 			this.state.consumeAddedAccountIdentities();
 		});
+		for (const account of this.state.accounts) {
+			this.state.markUserDisabledSaved(account);
+		}
+	}
+
+	private adoptNewerDiskUserPreferences(
+		outgoing: AccountStorageV3,
+		disk: AccountStorageV3,
+		baselineByIdentity: ReadonlyMap<string, boolean>,
+	): void {
+		const diskByIdentity = new Map<string, AccountMetadataV3>();
+		for (const record of disk.accounts) {
+			diskByIdentity.set(getWorkspaceIdentityKey(record), record);
+		}
+
+		for (const mine of outgoing.accounts) {
+			const identity = getWorkspaceIdentityKey(mine);
+			const theirs = diskByIdentity.get(identity);
+			const live = this.state.accounts.find(
+				(candidate) => getWorkspaceIdentityKey(candidate) === identity,
+			);
+			if (!theirs || !live) continue;
+			const diskUserDisabled = isPersistedUserDisabled(theirs);
+			if (diskUserDisabled === baselineByIdentity.get(identity)) continue;
+
+			this.state.adoptUserDisabled(live, diskUserDisabled);
+			this.copyUserPreferenceToStorage(mine, live);
+		}
+	}
+
+	private copyUserPreferenceToStorage(
+		stored: AccountMetadataV3,
+		account: ManagedAccount,
+	): void {
+		stored.enabled = account.enabled === false ? false : undefined;
+		stored.userDisabled = account.userDisabled ? true : undefined;
 	}
 
 	/**

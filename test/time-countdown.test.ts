@@ -164,6 +164,11 @@ vi.mock("../lib/accounts.js", () => {
 			return this.accounts.filter((account) => account !== null);
 		}
 
+		setManualAccountOverride(index: number | null) {
+			if (index === null) return null;
+			return this.getAccountsSnapshot().find((account) => account.index === index) ?? null;
+		}
+
 		shouldShowAccountToast() {
 			return false;
 		}

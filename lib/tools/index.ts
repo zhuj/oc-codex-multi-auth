@@ -37,6 +37,7 @@ import { createCodexNextTool } from "./codex-next.js";
 import { createCodexSetupTool } from "./codex-setup.js";
 import { createCodexListTool } from "./codex-list.js";
 import { createCodexSwitchTool } from "./codex-switch.js";
+import { createCodexAccountEnabledTool } from "./codex-account-enabled.js";
 import { createCodexWarmTool } from "./codex-warm.js";
 import { createCodexStatusTool } from "./codex-status.js";
 import { createCodexLimitsTool } from "./codex-limits.js";
@@ -93,7 +94,12 @@ export interface ToolContext {
 	// --- Mutable plugin-closure state ---------------------------------------
 	cachedAccountManagerRef: MutableRef<AccountManager | null>;
 	accountManagerPromiseRef: MutableRef<Promise<AccountManager> | null>;
+	manualAccountOverrideIdentityRef: MutableRef<string | null>;
 	reloadCachedAccountManager: () => Promise<void>;
+	withAccountManagerMutation: <T>(
+		mutation: () => Promise<T>,
+		shouldReload: (result: T) => boolean,
+	) => Promise<T>;
 
 	// --- Read-only plugin-closure state -------------------------------------
 	runtimeMetrics: RuntimeMetrics;
@@ -242,6 +248,7 @@ export function createToolRegistry(ctx: ToolContext): CodexToolRegistry {
 	return {
 		"codex-list": createCodexListTool(ctx),
 		"codex-switch": createCodexSwitchTool(ctx),
+		"codex-account-enabled": createCodexAccountEnabledTool(ctx),
 		"codex-warm": createCodexWarmTool(ctx),
 		"codex-status": createCodexStatusTool(ctx),
 		"codex-limits": createCodexLimitsTool(ctx),

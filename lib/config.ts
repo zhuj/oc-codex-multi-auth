@@ -104,6 +104,7 @@ const DEFAULT_CONFIG: PluginConfig = {
 	unsupportedCodexFallbackChain: {},
 	tokenRefreshSkewMs: 60_000,
 	rateLimitToastDebounceMs: 60_000,
+	rateLimitJitterFactor: 0.2,
 	toastDurationMs: 5_000,
 	accountToasts: true,
 	perProjectAccounts: true,
@@ -1189,6 +1190,15 @@ export function getRateLimitToastDebounceMs(pluginConfig: PluginConfig): number 
 		pluginConfig.rateLimitToastDebounceMs,
 		60_000,
 		{ min: 0 },
+	);
+}
+
+export function getRateLimitJitterFactor(pluginConfig: PluginConfig): number {
+	return resolveNumberSetting(
+		"CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR",
+		pluginConfig.rateLimitJitterFactor,
+		0.2,
+		{ min: 0, max: 1 },
 	);
 }
 

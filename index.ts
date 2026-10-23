@@ -76,6 +76,7 @@ import {
 	getRetryProfile,
 	getRetryBudgetOverrides,
 	getRateLimitToastDebounceMs,
+	getRateLimitJitterFactor,
 	getRetryAllAccountsMaxRetries,
 	getRetryAllAccountsMaxWaitMs,
 	getRetryAllAccountsRateLimited,
@@ -157,6 +158,7 @@ import {
 import {
 	describeDisabledReason,
 	hasAutoDisableNote,
+	isPersistedUserDisabled,
 	stripAutoDisableNote,
 } from "./lib/accounts/state.js";
 import {
@@ -545,7 +547,9 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 	let customBaseURLErrorShown = false;
 	let cachedAccountManager: AccountManager | null = null;
 	let accountManagerPromise: Promise<AccountManager> | null = null;
+	let manualAccountOverrideIdentity: string | null = null;
 	let loaderMutex: Promise<void> | null = null;
+	let accountMutationMutex: Promise<void> | null = null;
 	let startupPrewarmTriggered = false;
 	let startupOriginRecorded = false;
 	let startupPreflightShown = false;
@@ -566,6 +570,21 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 	// this ceiling" unless the operator restores truly unbounded waits with
 	// CODEX_RETRY_ALL_UNBOUNDED=1.
 	const INTERACTIVE_ALL_LIMITED_CEILING_MS = 10 * 60_000;
+	const applyManualAccountOverride = (manager: AccountManager): void => {
+		if (manualAccountOverrideIdentity === null) {
+			manager.setManualAccountOverride(null);
+			return;
+		}
+		const account = manager.getAccountsSnapshot().find(
+			(candidate) => getWorkspaceIdentityKey(candidate) === manualAccountOverrideIdentity,
+		);
+		if (!account) {
+			manualAccountOverrideIdentity = null;
+			manager.setManualAccountOverride(null);
+			return;
+		}
+		manager.setManualAccountOverride(account.index);
+	};
 
 	// Which accounts the backend said cannot serve a model, kept across
 	// requests so the credits fallback does not wait on a seat that will never
@@ -1929,9 +1948,8 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 		 * disk is intact, which cross-process lock contention makes reachable.
 		 *
 		 * Emptying the pool for real always goes through an explicit action
-		 * (`codex-remove`, logout, a storage-mode switch); each installs its own
-		 * manager rather than arriving here, so refusing the shrink costs a genuine
-		 * deletion nothing.
+		 * (`codex-remove`, logout, a storage-mode switch); explicit mutations
+		 * permit an empty replacement, while incidental reloads retain this guard.
 		 */
 		const isUntrustworthyEmptyReload = (
 			incumbent: AccountManager | null,
@@ -1965,6 +1983,32 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 			emptyReloadRetryTimer.unref();
 		};
 
+		const installReloadedAccountManager = async (
+			previous: AccountManager,
+			allowEmptyPool = false,
+		): Promise<void> => {
+			try {
+				const reloadedManager = await AccountManager.loadFromDisk();
+				if (!allowEmptyPool && isUntrustworthyEmptyReload(previous, reloadedManager)) {
+					reloadedManager.disposeShutdownHandler();
+					logWarn(
+						`[${PLUGIN_NAME}] Account reload returned no accounts while ${previous.getAccountCount()} are held; keeping the loaded pool and retrying`,
+					);
+					scheduleEmptyReloadRetry(reloadCachedAccountManager);
+					return;
+				}
+				cancelEmptyReloadRetry();
+				applyManualAccountOverride(reloadedManager);
+				cachedAccountManager = reloadedManager;
+				accountManagerPromise = Promise.resolve(reloadedManager);
+				previous.disposeShutdownHandler();
+			} catch (error) {
+				logWarn(
+					`Failed to reload account manager: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		};
+
 		const reloadCachedAccountManager = async (): Promise<void> => {
 			if (!cachedAccountManager) return;
 			const previous = cachedAccountManager;
@@ -1981,27 +2025,54 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					`Failed to flush pending save while reloading account manager: ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
+			// Dispose only after the replacement is installed so we never leak
+			// the outgoing manager's shutdown handler on every reload, and so a
+			// load failure leaves the working manager intact.
+			await installReloadedAccountManager(previous);
+		};
+
+		const withAccountManagerMutation = async <T>(
+			mutation: () => Promise<T>,
+			shouldReload: (result: T) => boolean,
+		): Promise<T> => {
+			while (accountMutationMutex) {
+				await accountMutationMutex;
+			}
+			let releaseMutex: (() => void) | undefined;
+			const mutex = new Promise<void>((resolve) => {
+				releaseMutex = resolve;
+			});
+			accountMutationMutex = mutex;
 			try {
-				const reloadedManager = await AccountManager.loadFromDisk();
-				if (isUntrustworthyEmptyReload(previous, reloadedManager)) {
-					reloadedManager.disposeShutdownHandler();
-					logWarn(
-						`[${PLUGIN_NAME}] Account reload returned no accounts while ${previous.getAccountCount()} are held; keeping the loaded pool and retrying`,
-					);
-					scheduleEmptyReloadRetry(reloadCachedAccountManager);
-					return;
+				// A bootstrap load may already hold a pre-mutation snapshot even
+				// before it has populated the cache. Retire that snapshot as well.
+				const loaded = accountManagerPromise
+					? await accountManagerPromise.catch(() => null)
+					: null;
+				const previous = cachedAccountManager ?? loaded;
+				if (previous) {
+					try {
+						// Drain both a queued debounce and an already-running save before
+						// the storage mutation starts. The replacement path below must not
+						// flush this outgoing snapshot again after the mutation commits.
+						await previous.flushPendingSave();
+					} catch (error) {
+						logWarn(
+							`Failed to flush pending save before account mutation: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
 				}
-				cancelEmptyReloadRetry();
-				cachedAccountManager = reloadedManager;
-				accountManagerPromise = Promise.resolve(reloadedManager);
-				// Dispose only after the replacement is installed so we never leak
-				// the outgoing manager's shutdown handler on every reload, and so a
-				// load failure leaves the working manager intact.
-				previous.disposeShutdownHandler();
-			} catch (error) {
-				logWarn(
-					`Failed to reload account manager: ${error instanceof Error ? error.message : String(error)}`,
-				);
+
+				const result = await mutation();
+				if (previous && shouldReload(result)) {
+					await installReloadedAccountManager(previous, true);
+				}
+				return result;
+			} finally {
+				if (accountMutationMutex === mutex) {
+					accountMutationMutex = null;
+					releaseMutex?.();
+				}
 			}
 		};
 
@@ -2026,6 +2097,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					return;
 				}
 				cancelEmptyReloadRetry();
+				applyManualAccountOverride(reloaded);
 				cachedAccountManager = reloaded;
 				accountManagerPromise = Promise.resolve(reloaded);
 			} catch (error) {
@@ -2176,6 +2248,8 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					outgoing.disposeShutdownHandler(true);
 					retired = outgoing;
 				}
+				cancelEmptyReloadRetry();
+				applyManualAccountOverride(reloaded);
 				cachedAccountManager = reloaded;
 				accountManagerPromise = Promise.resolve(reloaded);
 				observedAccountsDigest = digest;
@@ -2374,6 +2448,9 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									}
 									await persist(current);
 								});
+								manualAccountOverrideIdentity = account && isPersistedUserDisabled(account)
+									? getWorkspaceIdentityKey(account)
+									: null;
 								await clearPromptQuotaCache();
 
 								// Reload manager from disk so we don't overwrite newer rotated
@@ -2401,6 +2478,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					return cachedAccountManager;
 				},
 				set current(value) {
+					if (value) applyManualAccountOverride(value);
 					cachedAccountManager = value;
 				},
 			},
@@ -2412,7 +2490,16 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 					accountManagerPromise = value;
 				},
 			},
+			manualAccountOverrideIdentityRef: {
+				get current() {
+					return manualAccountOverrideIdentity;
+				},
+				set current(value) {
+					manualAccountOverrideIdentity = value;
+				},
+			},
 			reloadCachedAccountManager,
+			withAccountManagerMutation,
 			runtimeMetrics,
 			beginnerSafeModeRef: {
 				get current() {
@@ -2557,6 +2644,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 						cachedAccountManager = loadedManager;
 					}
 					const accountManager = cachedAccountManager ?? loadedManager;
+					applyManualAccountOverride(accountManager);
 					await ensureAccountsWatcher();
 					const refreshToken = authFallback?.refresh ?? "";
 					const needsPersist =
@@ -2738,6 +2826,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 							runtimeMetrics.retryBudgetLimits = { ...retryBudgetLimits };
 							const tokenRefreshSkewMs = getTokenRefreshSkewMs(pluginConfig);
 							const rateLimitToastDebounceMs = getRateLimitToastDebounceMs(pluginConfig);
+							const rateLimitJitterFactor = getRateLimitJitterFactor(pluginConfig);
 							const retryAllAccountsRateLimited = beginnerSafeMode ? false : getRetryAllAccountsRateLimited(pluginConfig);
 							const retryAllAccountsMaxWaitMs = getRetryAllAccountsMaxWaitMs(pluginConfig);
 							// See INTERACTIVE_ALL_LIMITED_CEILING_MS: configured `0`
@@ -2768,6 +2857,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 							const spendCreditsEnabled = getSpendCredits(pluginConfig);
 							const effectiveUserConfig = fastSessionEnabled ? applyFastSessionDefaults(userConfig) : userConfig;
 							let accountManager = cachedAccountManager;
+							applyManualAccountOverride(accountManager);
 
                                                 // Step 1: Extract and rewrite URL for Codex backend
                                                 const originalUrl = extractRequestUrl(input);
@@ -3197,6 +3287,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 							accountManager = reloaded;
 						}
 						}
+						applyManualAccountOverride(accountManager);
 						const accountCount = accountManager.getAccountCount();
 						const attempted = new Set<number>();
 						// Diagnostics for the terminal error message below. The composite key keeps
@@ -3407,7 +3498,20 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 							attempted.add(account.index);
 							// Hybrid's last-resort result is not necessarily eligible. Requests
 							// must honor active blocks rather than sending it upstream anyway.
-							if (!servingOnCredits && selectedIneligible) {
+							const isManualUserDisabledOverride =
+								manualAccountOverrideIdentity !== null &&
+								getWorkspaceIdentityKey(account) === manualAccountOverrideIdentity &&
+								account.userDisabled;
+							if (
+								!servingOnCredits &&
+								currentExplainability.some((entry) =>
+									entry.index === account.index &&
+									!entry.eligible &&
+									!(isManualUserDisabledOverride && entry.reasons.every((reason) =>
+										reason === "disabled" || reason === "user-disabled",
+									)),
+								)
+							) {
 								continue;
 							}
 							if (creditsChoice) {
@@ -4222,7 +4326,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 																																			accountManager.markToastShown(account.index);
 								}
 
-															await sleep(addJitter(Math.max(MIN_BACKOFF_MS, delayMs), 0.2));
+										await sleep(addJitter(Math.max(MIN_BACKOFF_MS, delayMs), rateLimitJitterFactor));
 															continue;
 																																}
 
@@ -4656,7 +4760,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									const countdownCredits = upstreamBlocked ? describeCreditsWhenOutOfQuota() : "";
 									const countdownMessage = `All ${count} account(s) rate-limited.${countdownCredits} Waiting`;
 									await sleepWithCountdown(
-										addJitter(waitMs, 0.2),
+										addJitter(waitMs, rateLimitJitterFactor),
 										countdownMessage,
 										undefined,
 										probeUpstreamBlockLifted,
@@ -5414,9 +5518,11 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 									const now = Date.now();
 									const activeIndex = resolveActiveIndex(workingStorage, "codex");
 									const existingAccounts = workingStorage.accounts.map((account, index) => {
-										let status: "active" | "ok" | "rate-limited" | "cooldown" | "disabled";
-										if (account.enabled === false) {
-											status = "disabled";
+										let status: "active" | "ok" | "rate-limited" | "cooldown" | "user-disabled" | "temporarily-disabled";
+										if (isPersistedUserDisabled(account)) {
+											status = "user-disabled";
+										} else if (account.enabled === false) {
+											status = "temporarily-disabled";
 										} else if (
 											typeof account.coolingDownUntil === "number" &&
 											account.coolingDownUntil > now
@@ -5440,6 +5546,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 											status,
 											isCurrentAccount: index === activeIndex,
 											enabled: account.enabled !== false,
+											userDisabled: isPersistedUserDisabled(account),
 										};
 									});
 
@@ -5511,12 +5618,15 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 													(candidate) => getWorkspaceIdentityKey(candidate) === identityKey,
 												);
 												if (!current || !currentTarget) return;
-												currentTarget.enabled = currentTarget.enabled === false;
-												enabled = currentTarget.enabled;
+												enabled = isPersistedUserDisabled(currentTarget);
+												currentTarget.userDisabled = !enabled;
 												// Enabling by hand must shed the plugin's auto-disable
 												// attribution or the account stays marked as
 												// machine-disabled after the operator chose it.
 												if (enabled) {
+													if (!currentTarget.accountNote?.includes("Re-auth required for missing OAuth scope(s):")) {
+														delete currentTarget.enabled;
+													}
 													currentTarget.accountNote = stripAutoDisableNote(
 														currentTarget.accountNote,
 													);
@@ -5524,6 +5634,8 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 														delete currentTarget.coolingDownUntil;
 														delete currentTarget.cooldownReason;
 													}
+												} else {
+													currentTarget.enabled = false;
 												}
 												await persist(current);
 											});

@@ -59,6 +59,8 @@ export function createCodexHelpTool(ctx: ToolContext): ToolDefinition {
 					lines: [
 						"List accounts: codex-list",
 						"Switch active account: codex-switch index=2",
+						"Disable automatic routing: codex-account-enabled index=2 enabled=false",
+						"Re-enable automatic routing: codex-account-enabled index=2 enabled=true",
 						"Warm up all accounts: codex-warm",
 						"Show detailed status: codex-status",
 						"Set account label: codex-label index=2 label=\"Work\"",

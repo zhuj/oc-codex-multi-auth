@@ -303,6 +303,10 @@ export class AccountManager {
 		}
 	}
 
+	setManualAccountOverride(index: number | null): ManagedAccount | null {
+		return this.rotation.setManualAccountOverride(index);
+	}
+
 	recordSuccess(
 		account: ManagedAccount,
 		family: ModelFamily,

@@ -108,7 +108,7 @@ responses-lite request shape. The shipped templates in
 
 ## Related
 
-- [tools-and-cli.md](tools-and-cli.md) — the 25 `codex-*` tools and standalone commands
+- [tools-and-cli.md](tools-and-cli.md) — the 26 `codex-*` tools and standalone commands
 - [configuration.md](configuration.md) — plugin config keys and env overrides
 - [upgrade.md](upgrade.md) — package renames and storage migration
 - [troubleshooting.md](troubleshooting.md) — when something breaks

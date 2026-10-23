@@ -1,14 +1,14 @@
 # Tools and CLI
 
-Reference for the **25** OpenCode `codex-*` tools and the standalone `oc-codex-multi-auth` bin.
+Reference for the **26** OpenCode `codex-*` tools and the standalone `oc-codex-multi-auth` bin.
 
 Tools run inside OpenCode (agent/tool surface). The standalone bin is an installer plus a thin CLI that runs the same diagnostics without an agent loop.
 
 ---
 
-## OpenCode tools (25)
+## OpenCode tools (26)
 
-Registered from per-file factories under `lib/tools/` via `createToolRegistry` in `lib/tools/index.ts`. Account numbers you **pass in** (`index`, `account`, `accounts[]`) are **1-based**; `switch`, `label`, `tag`, `note`, `enable`, and `remove` open an interactive picker when `index` is omitted and the terminal supports menus. Numbers a command **prints back** differ by surface: `Account N` labels, picker entries, and tool `format="json"` `index`/`activeIndex` fields are all 1-based (tool JSON also carries the storage position separately as `zeroBasedIndex`), while the standalone CLI's `[N]` labels and `--json` `index` fields are the account's raw **0-based** storage position (see [Account numbering](#account-numbering)).
+Registered from per-file factories under `lib/tools/` via `createToolRegistry` in `lib/tools/index.ts`. Account numbers you **pass in** (`index`, `account`, `accounts[]`) are **1-based**; `switch`, `account-enabled`, `label`, `tag`, `note`, `enable`, and `remove` open an interactive picker when `index` is omitted and the terminal supports menus. Numbers a command **prints back** differ by surface: `Account N` labels, picker entries, and tool `format="json"` `index`/`activeIndex` fields are all 1-based (tool JSON also carries the storage position separately as `zeroBasedIndex`), while the standalone CLI's `[N]` labels and `--json` `index` fields are the account's raw **0-based** storage position (see [Account numbering](#account-numbering)).
 
 | Tool | Purpose |
 | --- | --- |
@@ -17,6 +17,7 @@ Registered from per-file factories under `lib/tools/` via `createToolRegistry` i
 | `codex-next` | The single most recommended next action for beginners |
 | `codex-list` | List accounts, active index, labels/tags |
 | `codex-switch` | Switch the active account |
+| `codex-account-enabled` | Include or exclude an account from automatic routing without deleting it |
 | `codex-warm` | Send one lightweight request per enabled account to open/stagger usage windows |
 | `codex-status` | Detailed account and rate-limit status |
 | `codex-limits` | Live 5-hour and weekly usage per account, plus the plan-weighted pool total |
@@ -49,6 +50,7 @@ Registered from per-file factories under `lib/tools/` via `createToolRegistry` i
 | `codex-next` | `format?` |
 | `codex-list` | `tag?`, `format?`, `includeSensitive?` |
 | `codex-switch` | `index?` |
+| `codex-account-enabled` | `index?`, `enabled` (bool), include or exclude an account from automatic routing |
 | `codex-warm` | `format?` |
 | `codex-status` | `format?`, `includeSensitive?` |
 | `codex-limits` | `format?`, `includeSensitive?` |
@@ -73,6 +75,8 @@ Registered from per-file factories under `lib/tools/` via `createToolRegistry` i
 ```text
 codex-list
 codex-switch index=2
+codex-account-enabled index=2 enabled=false
+codex-account-enabled index=2 enabled=true
 codex-pool action="set" model="gpt-5.6-sol" accounts=[7,8]
 codex-pool action="set-mode" model="gpt-5.6-sol" poolMode="strict"
 codex-label index=2 label="plus-1"
@@ -99,6 +103,7 @@ Two conventions coexist, and they are different on purpose:
 
 ### Operational notes
 
+- **`codex-account-enabled`:** persists automatic-routing eligibility. An explicit `codex-switch` to a user-disabled account creates a process-local override that ends on another explicit switch, when `codex-account-enabled` re-enables that account, when the account leaves the pool, or on process restart. Strict pools, OAuth scopes, quotas, cooldowns, request exclusions, and token-bucket checks still apply.
 - **`codex-pool`** accepts 1-based numbers but persists **stable account IDs** in `~/.opencode/openai-codex-auth-config.json`. The fetch path re-reads plugin config each request, so mutations apply on the next request.
 - **`codex-reset`**: `action="consume"` is irreversible and needs `confirm=true`; `dryRun=true` previews.
 - **`codex-doctor fix=true`**: refreshes enabled accounts and clears stale cooldown/rate-limit/quota markers **only after a successful refresh** — shared logic with CLI `doctor --fix` (`lib/tools/doctor-repair.ts`).

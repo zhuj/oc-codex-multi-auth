@@ -172,4 +172,84 @@ describe("auth-menu", () => {
 			expect.stringContaining("shared@example.com"),
 		);
 	});
+
+	it.each([true, false])("distinguishes disabled account rows with colorEnabled=%s", async (colorEnabled) => {
+		setUiRuntimeOptions({ colorEnabled });
+		vi.mocked(select).mockResolvedValueOnce({ type: "cancel" });
+
+		await showAuthMenu([
+			{
+				index: 0,
+				email: "operator-disabled@example.com",
+				enabled: false,
+				userDisabled: true,
+				status: "user-disabled",
+			},
+			{
+				index: 1,
+				email: "scope-disabled@example.com",
+				enabled: false,
+				userDisabled: false,
+				status: "temporarily-disabled",
+			},
+		]);
+
+		const firstCall = vi.mocked(select).mock.calls[0];
+		const items = firstCall?.[0] as Array<{ label: string; value?: { type?: string } }>;
+		const accountRows = items.filter((item) => item.value?.type === "select-account");
+		expect(accountRows[0]?.label).toContain("[user-disabled]");
+		expect(accountRows[0]?.label).not.toContain("[disabled]");
+		expect(accountRows[1]?.label).toContain("[temporarily-disabled]");
+		expect(accountRows[1]?.label).not.toContain("[disabled]");
+		for (const row of accountRows) {
+			expect(row.label.includes("\u001b[")).toBe(colorEnabled);
+		}
+	});
+
+	it.each(["user-disabled", "temporarily-disabled"] as const)(
+		"renders a single plain %s badge in account details when color is disabled",
+		async (status) => {
+			setUiRuntimeOptions({ colorEnabled: false });
+			vi.mocked(select).mockResolvedValueOnce("back");
+
+			await showAccountDetails({ index: 0, enabled: false, status });
+
+			expect(vi.mocked(select).mock.calls[0]?.[1]?.message).toBe(`1. Account [${status}]`);
+		},
+	);
+
+	it("bases the routing toggle action on user intent instead of temporary availability", async () => {
+		vi.mocked(select).mockResolvedValueOnce("back");
+
+		await showAccountDetails({
+			index: 0,
+			enabled: false,
+			userDisabled: false,
+			status: "temporarily-disabled",
+		});
+
+		const temporaryItems = vi.mocked(select).mock.calls[0]?.[0] as Array<{
+			label: string;
+			value: string;
+		}>;
+		expect(temporaryItems.find((item) => item.value === "toggle")?.label).toBe(
+			"Disable automatic routing",
+		);
+
+		vi.mocked(select).mockResolvedValueOnce("back");
+		await showAccountDetails({
+			index: 1,
+			enabled: false,
+			userDisabled: true,
+			status: "user-disabled",
+		});
+
+		const disabledItems = vi.mocked(select).mock.calls[1]?.[0] as Array<{
+			label: string;
+			value: string;
+		}>;
+		expect(disabledItems.find((item) => item.value === "toggle")?.label).toBe(
+			"Enable automatic routing",
+		);
+	});
 });

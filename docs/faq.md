@@ -92,7 +92,7 @@ with `oc-codex-multi-auth`. The full rename and storage-migration story is in
 
 ## Where is the full command list?
 
-[Tools and CLI](tools-and-cli.md) covers all 25 `codex-*` tools and the eight
+[Tools and CLI](tools-and-cli.md) covers all 26 `codex-*` tools and the eight
 standalone commands (`doctor`, `status`, `list`, `limits`, `dashboard`,
 `health`, `diag`, `warm`).
 

@@ -18,7 +18,7 @@ The npm bin is an installer for OpenCode config plus a thin standalone CLI
 ├── index.ts        # V1 plugin: auth loader, fetch pipeline, rotation, ToolContext; default export { id, server, setup }
 ├── tui.ts          # V1 TUI plugin: prompt quota status + details; default export also carries V2 `setup`
 ├── lib/            # core runtime — module map and subsystem tables in lib/AGENTS.md
-├── lib/tools/      # 25 `codex-*` tool factories + registry — see lib/tools/AGENTS.md
+├── lib/tools/      # 26 `codex-*` tool factories + registry — see lib/tools/AGENTS.md
 ├── test/           # vitest suites — see test/AGENTS.md
 ├── scripts/        # npm bin (installer + standalone CLI), build and audit helpers
 ├── config/         # shipped opencode.json templates (minimal/modern/legacy)
