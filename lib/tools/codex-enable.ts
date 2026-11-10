@@ -8,8 +8,7 @@
  */
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
-import { loadAccounts, withAccountStorageTransaction } from "../storage.js";
-import { AccountManager } from "../accounts.js";
+import { getWorkspaceIdentityKey, loadAccounts, withAccountStorageTransaction } from "../storage.js";
 import { hasAutoDisableNote, stripAutoDisableNote } from "../accounts/state.js";
 import { logWarn } from "../logger.js";
 import {
@@ -27,9 +26,8 @@ export function createCodexEnableTool(ctx: ToolContext): ToolDefinition {
 		supportsInteractiveMenus,
 		formatCommandAccountLabel,
 		resolveMaskEmail,
-		cachedAccountManagerRef,
-		accountManagerPromiseRef,
-		invalidateAccountManagerCache,
+		withAccountManagerMutation,
+		manualAccountOverrideIdentityRef,
 	} = ctx;
 	const definition = tool({
 		description:
@@ -130,7 +128,7 @@ export function createCodexEnableTool(ctx: ToolContext): ToolDefinition {
 				| { kind: "save-failed"; label: string }
 				| { kind: "ok"; label: string; wasAutoDisabled: boolean };
 
-			const outcome = await withAccountStorageTransaction<EnableOutcome>(
+			const outcome = await withAccountManagerMutation(() => withAccountStorageTransaction<EnableOutcome>(
 				async (current, persist) => {
 					const storage = current;
 					const accounts = storage?.accounts ?? [];
@@ -158,6 +156,7 @@ export function createCodexEnableTool(ctx: ToolContext): ToolDefinition {
 
 					const wasAutoDisabled = hasAutoDisableNote(account.accountNote);
 					delete account.enabled;
+					delete account.userDisabled;
 					// The plugin's own attribution goes; operator text around it stays.
 					account.accountNote = stripAutoDisableNote(account.accountNote);
 					// A leftover auth-failure cooldown would keep the account out of
@@ -178,9 +177,12 @@ export function createCodexEnableTool(ctx: ToolContext): ToolDefinition {
 						});
 						return { kind: "save-failed", label };
 					}
+					if (manualAccountOverrideIdentityRef.current === getWorkspaceIdentityKey(account)) {
+						manualAccountOverrideIdentityRef.current = null;
+					}
 					return { kind: "ok", label, wasAutoDisabled };
 				},
-			);
+			), (result) => result.kind === "ok");
 
 			if (outcome.kind === "invalid") {
 				if (ui.v2Enabled) {
@@ -232,39 +234,6 @@ export function createCodexEnableTool(ctx: ToolContext): ToolDefinition {
 					].join("\n");
 				}
 				return `${outcome.label} is already enabled.`;
-			}
-
-			// A new manager is mandatory, not just polite: a queued save on the
-			// old one must not resurrect the disabled state this transaction
-			// just rewrote. Invalidating retires it through the dispose+flush
-			// path — post-dispose writes merge only volatile fields, so its
-			// stale enabled/accountNote can never come back while fresh
-			// rate-limit evidence is still published. Capture the in-flight
-			// load BEFORE invalidating nulls the slot: the reload chains on it
-			// so a concurrent enable queues behind ours and installs happen in
-			// commit order — the last install is the freshest disk view, never
-			// an older snapshot that still shows this account disabled.
-			const priorLoad: Promise<unknown> =
-				accountManagerPromiseRef.current ?? Promise.resolve();
-			invalidateAccountManagerCache();
-			// A rejected in-flight load must not block this reload — ordering
-			// matters, not the prior outcome.
-			const reload = priorLoad
-				.catch(() => undefined)
-				.then(() => AccountManager.loadFromDisk());
-			accountManagerPromiseRef.current = reload;
-			try {
-				cachedAccountManagerRef.current = await reload;
-			} catch (error) {
-				// The enable already committed; a failed reload only delays the
-				// live pool seeing it — the next account access rebuilds. Drop
-				// the rejected promise so later callers are not chained to it.
-				if (accountManagerPromiseRef.current === reload) {
-					accountManagerPromiseRef.current = null;
-				}
-				logWarn(
-					`codex-enable: account enabled on disk but the manager reload failed; the next account access will retry (${error instanceof Error ? error.message : String(error)})`,
-				);
 			}
 
 			const { label, wasAutoDisabled } = outcome;

@@ -18,6 +18,7 @@ import {
 	getUnsupportedCodexPolicy,
 	getFallbackOnUnsupportedCodexModel,
 	getTokenRefreshSkewMs,
+	getRateLimitJitterFactor,
 	getRetryAllAccountsMaxRetries,
 	getFallbackToGpt52OnUnsupportedGpt53,
 	getUnsupportedCodexFallbackChain,
@@ -85,6 +86,7 @@ describe('Plugin Configuration', () => {
 		'CODEX_AUTH_QUOTA_NOTIFICATIONS',
 		'CODEX_AUTH_AUTO_PROTECT_CREDITS',
 		'CODEX_AUTH_QUOTA_NOTIFICATIONS_INTERVAL_MS',
+		'CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR',
 	] as const;
 	const originalEnv: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
 
@@ -138,6 +140,7 @@ describe('Plugin Configuration', () => {
 				unsupportedCodexFallbackChain: {},
 				tokenRefreshSkewMs: 60_000,
 				rateLimitToastDebounceMs: 60_000,
+				rateLimitJitterFactor: 0.2,
 				toastDurationMs: 5_000,
 				accountToasts: true,
 				perProjectAccounts: true,
@@ -195,6 +198,7 @@ describe('Plugin Configuration', () => {
 				unsupportedCodexFallbackChain: {},
 				tokenRefreshSkewMs: 60_000,
 				rateLimitToastDebounceMs: 60_000,
+				rateLimitJitterFactor: 0.2,
 				toastDurationMs: 5_000,
 				accountToasts: true,
 				perProjectAccounts: true,
@@ -245,6 +249,7 @@ describe('Plugin Configuration', () => {
 				unsupportedCodexFallbackChain: {},
 				tokenRefreshSkewMs: 60_000,
 				rateLimitToastDebounceMs: 60_000,
+				rateLimitJitterFactor: 0.2,
 				toastDurationMs: 5_000,
 				accountToasts: true,
 				perProjectAccounts: true,
@@ -306,6 +311,7 @@ describe('Plugin Configuration', () => {
 		unsupportedCodexFallbackChain: {},
 		tokenRefreshSkewMs: 60_000,
 		rateLimitToastDebounceMs: 60_000,
+		rateLimitJitterFactor: 0.2,
 		toastDurationMs: 5_000,
 		accountToasts: true,
 		perProjectAccounts: true,
@@ -361,6 +367,7 @@ describe('Plugin Configuration', () => {
 			unsupportedCodexFallbackChain: {},
 			tokenRefreshSkewMs: 60_000,
 			rateLimitToastDebounceMs: 60_000,
+			rateLimitJitterFactor: 0.2,
 			toastDurationMs: 5_000,
 			accountToasts: true,
 			perProjectAccounts: true,
@@ -987,6 +994,33 @@ describe('Plugin Configuration', () => {
 			expect(getQuotaNotifications({}).autoProtectCredits).toBe(false);
 			expect(getQuotaNotifications({}).intervalMs).toBe(600_000);
 		});
+	describe('rate-limit jitter settings', () => {
+		it('should resolve the file value', () => {
+			expect(getRateLimitJitterFactor({ rateLimitJitterFactor: 0.4 })).toBe(0.4);
+		});
+
+		it('should resolve the environment value before file config', () => {
+			process.env.CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR = '0.7';
+			expect(getRateLimitJitterFactor({ rateLimitJitterFactor: 0.4 })).toBe(0.7);
+		});
+
+		it('should fall back to file config for an invalid environment value', () => {
+			process.env.CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR = 'invalid';
+			expect(getRateLimitJitterFactor({ rateLimitJitterFactor: 0.4 })).toBe(0.4);
+		});
+
+		it('should fall back to the default when no value is configured', () => {
+			delete process.env.CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR;
+			expect(getRateLimitJitterFactor({})).toBe(0.2);
+		});
+
+		it('should clamp environment values to the supported range', () => {
+			process.env.CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR = '-1';
+			expect(getRateLimitJitterFactor({ rateLimitJitterFactor: 0.4 })).toBe(0);
+
+			process.env.CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR = '2';
+			expect(getRateLimitJitterFactor({ rateLimitJitterFactor: 0.4 })).toBe(1);
+		});
 	});
 
 	describe('getParallelProbingMaxConcurrency', () => {
@@ -1009,4 +1043,5 @@ describe('Plugin Configuration', () => {
 			expect(getParallelProbingMaxConcurrency({})).toBe(3);
 		});
 	});
+});
 });

@@ -1,7 +1,7 @@
 # Troubleshooting
 
 Symptom-by-symptom fixes for `oc-codex-multi-auth`. For command arguments see
-[Tools and CLI](tools-and-cli.md); for every config key see
+[Tools and CLI](tools-and-cli.md), covering all 26 `codex-*` tools; for every config key see
 [Configuration](configuration.md).
 
 ## Start here

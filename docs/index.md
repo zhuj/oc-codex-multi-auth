@@ -1,6 +1,6 @@
 # oc-codex-multi-auth Overview
 
-`oc-codex-multi-auth` is an OpenCode plugin that signs in ChatGPT Plus/Pro accounts through OAuth, keeps a pool of them on your machine, and rotates between them with health scoring and cooldowns — plus 25 `codex-*` tools and a thin standalone CLI for quota status, diagnostics, and recovery.
+`oc-codex-multi-auth` is an OpenCode plugin that signs in ChatGPT Plus/Pro accounts through OAuth, keeps a pool of them on your machine, and rotates between them with health scoring and cooldowns — plus 26 `codex-*` tools and a thin standalone CLI for quota status, diagnostics, and recovery.
 
 ## Who needs it
 
@@ -15,7 +15,7 @@ If a single ChatGPT account covers your work and you never think about quota, Op
 
 Two surfaces, always kept distinct:
 
-1. **In-session plugin.** OpenCode loads the package as a provider plugin (the V1 `server` hook, or the V2 `setup` hook on 2.0.16+). It shapes requests to the stateless Codex contract (`store: false` plus `reasoning.encrypted_content`), rotates to a healthy account on rate limits and failures, and registers the 25 `codex-*` tools the agent can call. The TUI plugin shows live quota status beside the prompt.
+1. **In-session plugin.** OpenCode loads the package as a provider plugin (the V1 `server` hook, or the V2 `setup` hook on 2.0.16+). It shapes requests to the stateless Codex contract (`store: false` plus `reasoning.encrypted_content`), rotates to a healthy account on rate limits and failures, and registers the 26 `codex-*` tools the agent can call. The TUI plugin shows live quota status beside the prompt.
 2. **Standalone CLI.** `oc-codex-multi-auth <command>` runs the installer plus nine commands (`doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm`, `update`) that read and write the same local pool — useful for scripting and repair without an agent loop.
 
 OAuth sign-in uses a loopback callback on `localhost:1455` (the listener binds both `127.0.0.1` and `::1`), or device-code/manual login for headless shells.
@@ -42,7 +42,7 @@ oc-codex-multi-auth limits          # usage windows across the pool
 | I want to... | Read |
 | --- | --- |
 | Install and sign in | [getting-started.md](getting-started.md) |
-| Tour the 25 tools and the CLI | [tools-and-cli.md](tools-and-cli.md) |
+| Tour the 26 tools and the CLI | [tools-and-cli.md](tools-and-cli.md) |
 | Understand the components and request flow | [architecture.md](architecture.md) |
 | Change settings or environment overrides | [configuration.md](configuration.md) |
 | Upgrade from an older name or release | [upgrade.md](upgrade.md) |

@@ -62,7 +62,7 @@ Use short sections and scan-friendly tables where they improve clarity. Simple A
 ## Command and Path Rules
 
 1. Canonical package name is `oc-codex-multi-auth` — always as one hyphenated word, in prose and in examples. The standalone CLI uses the same name.
-2. The in-session surface is the 25 `codex-*` tool names — always lowercase with the `codex-` prefix (`codex-status`, not `Codex Status`). OpenCode V2 normalizes them to `codex_status` form inside the host; describe that normalization only where V2 behavior is the topic.
+2. The in-session surface is the 26 `codex-*` tool names — always lowercase with the `codex-` prefix (`codex-status`, not `Codex Status`). OpenCode V2 normalizes them to `codex_status` form inside the host; describe that normalization only where V2 behavior is the topic.
 3. Canonical runtime state root is `~/.opencode`; OpenCode host config lives under `~/.config/opencode`, and the OAuth host token at `~/.local/share/opencode/auth.json` (`$XDG_DATA_HOME/opencode/auth.json`).
 4. OpenCode compatibility claims: the V1 plugin supports OpenCode 1.18.29+; the V2 adapter requires OpenCode 2.0.16+.
 5. Retired package names (`oc-chatgpt-multi-auth`, `opencode-openai-codex-auth-*`) belong only in migration and rename-history contexts (`README.md` callout, `upgrade.md`, `faq.md`, `troubleshooting.md`, `CHANGELOG.md` history).

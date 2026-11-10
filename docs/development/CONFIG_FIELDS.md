@@ -90,6 +90,7 @@ logged warning) and keeps the rest of the file.
 | `retryAllAccountsRateLimited` | `CODEX_AUTH_RETRY_ALL_RATE_LIMITED` | boolean | `true` | — | wait and retry when every account is rate-limited |
 | `retryAllAccountsMaxWaitMs` | `CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS` | number (ms) | `0` | ≥0; **no 24h ceiling** (`0` is a documented unbounded semantic) | cap on all-accounts-limited waits; `0` asks to wait as long as the backend requires — an interactive request caps that at a 10-minute ceiling unless `CODEX_RETRY_ALL_UNBOUNDED=1` |
 | `retryAllAccountsMaxRetries` | `CODEX_AUTH_RETRY_ALL_MAX_RETRIES` | integer | `Infinity` | int ≥0 | max attempts in the all-limited loop |
+| `rateLimitJitterFactor` | `CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR` | number | `0.2` | file: 0 to 1; env: clamped 0 to 1 | jitter for short and all-account rate-limit waits only; empty-response retry jitter remains `0.2` |
 | `emptyResponseMaxRetries` | `CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES` | integer | `2` | int ≥0 | retries after an empty SSE/response body |
 | `emptyResponseRetryDelayMs` | `CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS` | number (ms) | `1000` | 0–86400000 | delay between empty-response retries |
 | `fetchTimeoutMs` | `CODEX_AUTH_FETCH_TIMEOUT_MS` | number (ms) | `60000` | 1000–86400000 | upstream fetch timeout |
@@ -225,6 +226,23 @@ case-insensitively after model normalization, so `gpt-5.1-codex` and
 storage is per-project by default, so a pool can reference accounts that are
 unavailable in the current project — the loader reports them as unresolved
 but does not prune them. Mutations go through the `codex-pool` tool.
+
+## Account metadata (not plugin config)
+
+Account storage includes user-facing metadata updated by the `codex-*` tools:
+
+| Field | Meaning | Tool |
+|-------|---------|------|
+| `accountLabel` | display label | `codex-label` |
+| `accountTags` | grouping/filter tags | `codex-tag` |
+| `accountNote` | short reminder text | `codex-note` |
+| `userDisabled` | explicit operator choice to exclude an account from automatic routing; omitted/false means user-enabled | `codex-account-enabled` |
+
+`userDisabled` records operator intent separately from effective `enabled`.
+Temporary OAuth scope, quota, cooldown, request-exclusion, and token-bucket
+restrictions still apply. An explicit `codex-switch` may override only user
+disablement; that override isn't persisted and expires on failover, another
+explicit switch, or process restart. Strict model pools remain authoritative.
 
 ## Non-schema environment variables (context)
 

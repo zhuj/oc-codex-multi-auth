@@ -23,6 +23,7 @@ import type { AccountPersistence } from "./persistence.js";
 import {
 	appendAutoDisableNote,
 	AUTH_FAILURE_DISABLE_NOTE_MARKER,
+	hasAutoDisableNote,
 	WORKSPACE_DEACTIVATED_NOTE_MARKER,
 	type AccountState,
 	type ManagedAccount,
@@ -311,7 +312,8 @@ export class AccountRecovery {
 	disableAccountsWithSameRefreshToken(account: ManagedAccount): number {
 		let disabled = 0;
 		for (const candidate of this.state.accounts) {
-			if (candidate.refreshToken === account.refreshToken && candidate.enabled !== false) {
+			if (candidate.refreshToken === account.refreshToken &&
+				(candidate.enabled !== false || (candidate.userDisabled && !hasAutoDisableNote(candidate.accountNote)))) {
 				candidate.enabled = false;
 				candidate.accountNote = appendAutoDisableNote(
 					candidate.accountNote,
@@ -329,7 +331,8 @@ export class AccountRecovery {
 		const targetKey = getWorkspaceIdentityKey(account);
 		let disabled = 0;
 		for (const candidate of this.state.accounts) {
-			if (getWorkspaceIdentityKey(candidate) === targetKey && candidate.enabled !== false) {
+			if (getWorkspaceIdentityKey(candidate) === targetKey &&
+				(candidate.enabled !== false || (candidate.userDisabled && !hasAutoDisableNote(candidate.accountNote)))) {
 				candidate.enabled = false;
 				candidate.accountNote = appendAutoDisableNote(
 					candidate.accountNote,

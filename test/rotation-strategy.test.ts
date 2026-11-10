@@ -1,16 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { AccountManager } from "../lib/accounts.js";
-import { resetTrackers } from "../lib/rotation.js";
+import { getTokenTracker, resetTrackers } from "../lib/rotation.js";
 import {
 	getModelAccountPool,
 	getModelAccountPoolMode,
 	getRotationStrategy,
 } from "../lib/config.js";
 import type { PluginConfig } from "../lib/types.js";
-import type { AccountStorageV3 } from "../lib/storage.js";
+import { normalizeAccountStorage, type AccountStorageV3 } from "../lib/storage.js";
 import type { ModelFamily } from "../lib/prompts/codex.js";
 import { getModelPoolAccountKey } from "../lib/accounts/pool-identity.js";
 import { MAX_QUOTA_RESET_HORIZON_MS } from "../lib/quota-windows.js";
+import { AUTH_FAILURE_DISABLE_NOTE_MARKER } from "../lib/accounts/state.js";
+import { WORKSPACE_DEACTIVATED_NOTE_MARKER } from "../lib/accounts/disabled.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
@@ -381,6 +383,297 @@ describe("strategy dispatcher (#183)", () => {
 			["unknown-account-id"],
 		);
 		expect(selected?.index).toBe(0);
+	});
+
+	it.each(["sticky", "round-robin", "hybrid", "custom"] as const)(
+		"%s excludes a user-disabled account from automatic routing",
+		(strategy) => {
+			manager.setAccountEnabled(0, false);
+
+			expect(manager.getAccountForStrategy(strategy, FAMILY)?.index).toBe(1);
+		},
+	);
+
+	it.each(["sticky", "round-robin", "hybrid", "custom"] as const)(
+		"%s honors an explicitly switched user-disabled account",
+		(strategy) => {
+			manager.setAccountEnabled(0, false);
+			manager.setManualAccountOverride(0);
+
+			expect(manager.getAccountForStrategy(strategy, FAMILY)?.index).toBe(0);
+			expect(manager.getAccountForStrategy(strategy, FAMILY)?.index).toBe(0);
+		},
+	);
+
+	it("revalidates custom manual selection without changing the active account", () => {
+		manager.setAccountEnabled(1, false);
+		manager.setManualAccountOverride(1);
+		const request = { family: FAMILY, model: "gpt-5.6-sol" };
+		const candidates = manager.getCustomCandidates(request);
+		expect(candidates.map((account) => account.index)).toEqual([1]);
+		const candidate = candidates[0];
+		if (!candidate) throw new Error("Expected manual candidate");
+		expect(manager.acceptCustomCandidate(candidate, request)?.index).toBe(1);
+		expect(manager.getCurrentAccountForFamily(FAMILY)?.index).not.toBe(1);
+		manager.markRateLimited(candidate, 60_000, FAMILY, request.model);
+		expect(manager.acceptCustomCandidate(candidate, request)).toBeNull();
+		expect(manager.getCustomCandidates(request).map((account) => account.index)).not.toContain(1);
+		manager.markRateLimited(candidate, 0, FAMILY, request.model);
+		expect(manager.getCustomCandidates(request).map((account) => account.index)).toEqual([1]);
+		expect(manager.getCustomCandidates({ ...request, excludedIndices: new Set([1]) })
+			.map((account) => account.index)).not.toContain(1);
+		expect(manager.getCustomCandidates({ ...request, preferredAccountIds: ["account-id-1"], poolMode: "strict" })
+			.map((account) => account.index)).toEqual([0]);
+	});
+
+	it.each(["disableAccountsWithSameRefreshToken", "disableAccountsByWorkspaceIdentity"] as const)(
+		"%s records automatic failure separately from manual selection intent",
+		(method) => {
+			manager.setAccountEnabled(0, false);
+			manager.setManualAccountOverride(0);
+			const account = manager.getAccountAt(0);
+			if (!account) throw new Error("Expected first account");
+			expect(manager[method](account)).toBe(1);
+			expect(account.userDisabled).toBe(true);
+			expect(account.accountNote).toContain("Disabled automatically");
+			expect(manager.getAccountForStrategy("custom", FAMILY)?.index).toBe(1);
+			expect(manager[method](account)).toBe(0);
+		},
+	);
+
+	it("does not repair an automatic disable as a stale scope-only disable", () => {
+		const storage = makeStorage(2);
+		storage.accounts[0] = {
+			...storage.accounts[0]!, enabled: false,
+			accountNote: `${AUTH_FAILURE_DISABLE_NOTE_MARKER} Re-auth required for missing OAuth scope(s): email.`,
+		};
+		const loaded = new AccountManager(undefined, storage);
+		expect(loaded.getAccountAt(0)).toMatchObject({ enabled: false, userDisabled: false });
+		expect(loaded.getAccountForStrategy("custom", FAMILY)?.index).toBe(1);
+	});
+
+	it.each(["hybrid", "sticky", "round-robin", "custom"] as const)(
+		"%s never overrides an auto-disable even when user-disabled as well",
+		(strategy) => {
+			const account = manager.getAccountAt(0);
+			if (!account) throw new Error("Expected first account");
+			account.accountNote = AUTH_FAILURE_DISABLE_NOTE_MARKER;
+			manager.setAccountEnabled(0, false);
+			manager.setManualAccountOverride(0);
+			expect(manager.getAccountForStrategy(strategy, FAMILY)?.index).toBe(1);
+		},
+	);
+
+	describe.each([
+		{ cause: "authentication failure", marker: AUTH_FAILURE_DISABLE_NOTE_MARKER },
+		{ cause: "workspace deactivation", marker: WORKSPACE_DEACTIVATED_NOTE_MARKER },
+	])("merged automatic-disable routing: $cause", ({ marker }) => {
+		it.each(["hybrid", "sticky", "round-robin", "custom"] as const)(
+			"%s cannot manually override a retained disable in either input order",
+			(strategy) => {
+				for (const reversed of [false, true]) {
+					resetTrackers();
+					const older = {
+						accountId: "fake-disabled", refreshToken: "fake-disabled-refresh",
+						enabled: false, userDisabled: false, accountNote: marker, addedAt: 1, lastUsed: 1,
+					};
+					const newer = {
+						...older, enabled: true, accountNote: "Operator reminder.", addedAt: 2, lastUsed: 2,
+					};
+					const healthy = {
+						accountId: "fake-healthy", refreshToken: "fake-healthy-refresh", addedAt: 3, lastUsed: 3,
+					};
+					const storage = normalizeAccountStorage({
+						version: 3, activeIndex: 0,
+						accounts: [...(reversed ? [newer, older] : [older, newer]), healthy],
+					});
+					if (!storage) throw new Error("Expected normalized fixture");
+					const loaded = new AccountManager(undefined, storage);
+
+					loaded.setManualAccountOverride(0);
+
+					expect(loaded.getAccountForStrategy(strategy, FAMILY)?.accountId).toBe("fake-healthy");
+				}
+			},
+		);
+
+		it("allows explicit re-enablement after a retained disable without losing operator text", () => {
+			const storage = normalizeAccountStorage({
+				version: 3, activeIndex: 0,
+				accounts: [
+					{ accountId: "fake-recovered", refreshToken: "fake-refresh", enabled: false,
+						userDisabled: false, accountNote: marker, addedAt: 1, lastUsed: 1 },
+					{ accountId: "fake-recovered", refreshToken: "fake-refresh", enabled: true,
+						userDisabled: false, accountNote: "Operator reminder.", addedAt: 2, lastUsed: 2 },
+				],
+			});
+			if (!storage) throw new Error("Expected normalized fixture");
+			const loaded = new AccountManager(undefined, storage);
+
+			loaded.setAccountEnabled(0, true);
+
+			expect(loaded.getAccountForStrategy("sticky", FAMILY)?.accountId).toBe("fake-recovered");
+			expect(loaded.getAccountAt(0)).toMatchObject({
+				enabled: true, userDisabled: false, accountNote: "Operator reminder.",
+			});
+		});
+	});
+
+	it("replaces the manual override on another explicit switch", () => {
+		manager.setAccountEnabled(0, false);
+		manager.setAccountEnabled(1, false);
+		manager.setManualAccountOverride(0);
+		expect(manager.getAccountForStrategy("sticky", FAMILY)?.index).toBe(0);
+
+		manager.setManualAccountOverride(1);
+
+		expect(manager.getAccountForStrategy("sticky", FAMILY)?.index).toBe(1);
+	});
+
+	it("keeps manual selection inside a strict model pool", () => {
+		manager.setAccountEnabled(0, false);
+		manager.setManualAccountOverride(0);
+
+		const selected = manager.getAccountForStrategy(
+			"hybrid",
+			FAMILY,
+			"gpt-5.6-sol",
+			undefined,
+			["account-id-2"],
+			"strict",
+		);
+
+		expect(selected?.accountId).toBe("account-id-2");
+	});
+
+	it("allows a manually selected disabled account inside its strict model pool", () => {
+		manager.setAccountEnabled(1, false);
+		manager.setManualAccountOverride(1);
+
+		const selected = manager.getAccountForStrategy(
+			"hybrid",
+			FAMILY,
+			"gpt-5.6-sol",
+			undefined,
+			["account-id-2"],
+			"strict",
+		);
+
+		expect(selected?.accountId).toBe("account-id-2");
+	});
+
+	it("does not let a manual override bypass request-local exclusions", () => {
+		manager.setAccountEnabled(0, false);
+		manager.setManualAccountOverride(0);
+
+		const selected = manager.getAccountForStrategy(
+			"hybrid",
+			FAMILY,
+			undefined,
+			undefined,
+			undefined,
+			"preferred",
+			new Set([0]),
+		);
+
+		expect(selected?.index).toBe(1);
+	});
+
+	it("keeps the manual override after a rate-limit failover", () => {
+		manager.setAccountEnabled(0, false);
+		manager.setManualAccountOverride(0);
+		const overridden = manager.getAccountForStrategy("hybrid", FAMILY);
+		if (!overridden) throw new Error("manual account was not selected");
+		manager.markRateLimited(overridden, 60_000, FAMILY);
+
+		expect(manager.getAccountForStrategy("hybrid", FAMILY)?.index).toBe(1);
+
+		manager.markRateLimited(overridden, 0, FAMILY);
+
+		expect(manager.getAccountForStrategy("hybrid", FAMILY)?.index).toBe(0);
+	});
+
+	it("does not make a manually selected disabled account the active account", () => {
+		manager.setAccountEnabled(1, false);
+		manager.setManualAccountOverride(1);
+
+		expect(manager.getAccountForStrategy("hybrid", FAMILY)?.index).toBe(1);
+		expect(manager.getCurrentAccountForFamily(FAMILY)?.index).not.toBe(1);
+	});
+
+	it("honours a manual override inside a strict pool keyed by seat identity", () => {
+		const storage = makeStorage(2);
+		const target = storage.accounts[0];
+		if (!target) throw new Error("missing target account");
+		// `codex-pool add` stores the member-scoped seat key, not the
+		// workspace-wide account id.
+		target.accountId = "business-account";
+		target.accountUserId = "member-owner";
+		target.enabled = false;
+		target.userDisabled = true;
+		const seatManager = new AccountManager(undefined, storage);
+		const seatKey = getModelPoolAccountKey(target);
+		if (!seatKey) throw new Error("seat pool key was not derived");
+		seatManager.setManualAccountOverride(0);
+
+		const selected = seatManager.getAccountForStrategy(
+			"hybrid",
+			FAMILY,
+			"gpt-5.6-sol",
+			undefined,
+			[seatKey],
+			"strict",
+		);
+
+		expect(selected?.index).toBe(0);
+	});
+
+	it("does not let a manual override bypass cooldowns", () => {
+		manager.setAccountEnabled(0, false);
+		manager.setManualAccountOverride(0);
+		const target = manager.getCurrentAccount();
+		if (!target) throw new Error("missing target account");
+		manager.markAccountCoolingDown(target, 60_000, "auth-failure");
+
+		expect(manager.getAccountForStrategy("hybrid", FAMILY)?.index).toBe(1);
+	});
+
+	it("does not let a manual override bypass the local token bucket", () => {
+		manager.setAccountEnabled(0, false);
+		manager.setManualAccountOverride(0);
+		getTokenTracker().drain(0, FAMILY, 100);
+
+		expect(manager.getAccountForStrategy("hybrid", FAMILY)?.index).toBe(1);
+	});
+
+	it("does not let a manual override bypass missing OAuth scopes", () => {
+		const storage = makeStorage(2);
+		const target = storage.accounts[0];
+		if (!target) throw new Error("missing target account");
+		target.enabled = false;
+		target.userDisabled = true;
+		target.oauthScope = "openid profile";
+		target.accountNote =
+			"Re-auth required for missing OAuth scope(s): email, offline_access.";
+		const scopedManager = new AccountManager(undefined, storage);
+		scopedManager.setManualAccountOverride(0);
+
+		expect(scopedManager.getAccountForStrategy("hybrid", FAMILY)?.index).toBe(1);
+	});
+
+	it("does not persist a manual override across manager restart", () => {
+		const storage = makeStorage(2);
+		const target = storage.accounts[0];
+		if (!target) throw new Error("missing target account");
+		target.enabled = false;
+		target.userDisabled = true;
+		const currentProcess = new AccountManager(undefined, storage);
+		currentProcess.setManualAccountOverride(0);
+		expect(currentProcess.getAccountForStrategy("sticky", FAMILY)?.index).toBe(0);
+
+		const restarted = new AccountManager(undefined, storage);
+
+		expect(restarted.getAccountForStrategy("sticky", FAMILY)?.index).toBe(1);
 	});
 });
 

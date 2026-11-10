@@ -31,9 +31,16 @@ import type { AccountState, ManagedAccount } from "./state.js";
 import type { CustomSelectionRequest } from "../custom-rotation/selection.js";
 
 export class AccountRotation {
+	private manualOverrideIndex: number | null = null;
+
 	constructor(private readonly state: AccountState) {}
 
 	getCustomCandidates(request: CustomSelectionRequest): readonly ManagedAccount[] {
+		const manual = this.takeManualOverride(
+			request.family, request.model, request.preferredAccountIds,
+			request.poolMode === "strict", request.excludedIndices,
+		);
+		if (manual) return [manual];
 		const preferred = this.getPreferredSelectableIndices(
 			request.preferredAccountIds, request.family, request.model,
 			request.poolMode === "strict", request.excludedIndices,
@@ -47,9 +54,23 @@ export class AccountRotation {
 
 	acceptCustomCandidate(account: ManagedAccount, request: CustomSelectionRequest): ManagedAccount | null {
 		if (!this.getCustomCandidates(request).includes(account)) return null;
+		// Manual selection affects execution only, never the persisted active slot.
+		if (account.userDisabled) return this.useManualOverride(account);
 		this.state.currentAccountIndexByFamily[request.family] = account.index;
 		this.state.cursorByFamily[request.family] = (account.index + 1) % this.state.accounts.length;
 		account.lastUsed = nowMs();
+		return account;
+	}
+
+	setManualAccountOverride(index: number | null): ManagedAccount | null {
+		if (index === null) {
+			this.manualOverrideIndex = null;
+			return null;
+		}
+		if (!Number.isInteger(index)) return null;
+		const account = this.state.accounts[index];
+		if (!account) return null;
+		this.manualOverrideIndex = account.userDisabled ? index : null;
 		return account;
 	}
 
@@ -69,8 +90,14 @@ export class AccountRotation {
 		account: ManagedAccount,
 		family: ModelFamily,
 		model?: string | null,
+		allowUserDisabled = false,
 	): boolean {
-		if (account.enabled === false) return false;
+		if (
+			(account.enabled === false || account.userDisabled) &&
+			!(allowUserDisabled && this.state.canOverrideUserDisabled(account))
+		) {
+			return false;
+		}
 		clearExpiredRateLimits(account);
 		clearExpiredQuotaExhaustion(account);
 		if (isQuotaExhausted(account)) return false;
@@ -78,6 +105,35 @@ export class AccountRotation {
 		if (this.state.isAccountCoolingDown(account)) return false;
 		const quotaKey = model ? `${family}:${model}` : family;
 		return getTokenTracker().hasToken(account.index, quotaKey);
+	}
+
+	private takeManualOverride(
+		family: ModelFamily,
+		model: string | null | undefined,
+		preferredAccountIds: readonly string[] | undefined,
+		strictPreferredPool: boolean,
+		excludedIndices: ReadonlySet<number> | undefined,
+	): ManagedAccount | null {
+		if (this.manualOverrideIndex === null) return null;
+		const account = this.state.accounts[this.manualOverrideIndex];
+		if (!account || !account.userDisabled) {
+			this.manualOverrideIndex = null;
+			return null;
+		}
+		if (excludedIndices?.has(account.index)) return null;
+		if (
+			strictPreferredPool &&
+			preferredAccountIds?.length &&
+			!preferredAccountIds.some((key) => matchesModelPoolAccountKey(account, key))
+		) {
+			return null;
+		}
+		return this.isSelectable(account, family, model, true) ? account : null;
+	}
+
+	private useManualOverride(account: ManagedAccount): ManagedAccount {
+		account.lastUsed = nowMs();
+		return account;
 	}
 
 	private getPreferredSelectableIndices(
@@ -120,6 +176,14 @@ export class AccountRotation {
 	): ManagedAccount | null {
 		const count = this.state.accounts.length;
 		if (count === 0) return null;
+		const manual = this.takeManualOverride(
+			family,
+			model,
+			preferredAccountIds,
+			strictPreferredPool,
+			excludedIndices,
+		);
+		if (manual) return this.useManualOverride(manual);
 		const preferredIndices = this.getPreferredSelectableIndices(
 			preferredAccountIds,
 			family,
@@ -148,6 +212,7 @@ export class AccountRotation {
 	}
 
 	getNextForFamily(family: ModelFamily, model?: string | null): ManagedAccount | null {
+		this.manualOverrideIndex = null;
 		const count = this.state.accounts.length;
 		if (count === 0) return null;
 
@@ -201,6 +266,14 @@ export class AccountRotation {
 	): ManagedAccount | null {
 		const count = this.state.accounts.length;
 		if (count === 0) return null;
+		const manual = this.takeManualOverride(
+			family,
+			model,
+			preferredAccountIds,
+			strictPreferredPool,
+			excludedIndices,
+		);
+		if (manual) return this.useManualOverride(manual);
 		const preferredIndices = this.getPreferredSelectableIndices(
 			preferredAccountIds,
 			family,
@@ -297,6 +370,14 @@ export class AccountRotation {
 	): ManagedAccount | null {
 		const count = this.state.accounts.length;
 		if (count === 0) return null;
+		const manual = this.takeManualOverride(
+			family,
+			model,
+			preferredAccountIds,
+			strictPreferredPool,
+			excludedIndices,
+		);
+		if (manual) return this.useManualOverride(manual);
 		const preferredIndices = this.getPreferredSelectableIndices(
 			preferredAccountIds,
 			family,

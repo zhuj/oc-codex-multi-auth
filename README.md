@@ -7,7 +7,7 @@
 
 <img width="1227" height="702" alt="oc-codex-multi-auth OpenAI accounts picker in OpenCode — add accounts, check quotas, and per-account health" src="https://github.com/user-attachments/assets/b796eb2f-282e-468a-ba6a-acadf09d731b" />
 
-`oc-codex-multi-auth` is an OpenCode plugin that runs Codex-style GPT models on your ChatGPT Plus/Pro subscription over OAuth. It keeps a named pool of ChatGPT accounts on your machine, rotates across them per request with health- and quota-aware selection, shows quota in the TUI prompt line, and ships a 24-tool `codex-*` command kit plus a standalone CLI. Account state stays local under `~/.opencode`.
+`oc-codex-multi-auth` is an OpenCode plugin that runs Codex-style GPT models on your ChatGPT Plus/Pro subscription over OAuth. It keeps a named pool of ChatGPT accounts on your machine, rotates across them per request with health- and quota-aware selection, shows quota in the TUI prompt line, and ships a 26-tool `codex-*` command kit plus a standalone CLI. Account state stays local under `~/.opencode`.
 
 Use it when one ChatGPT account is not enough: you hit rate limits or quota windows, you split work across accounts and projects, or you run unattended agents that need JSON diagnostics and safe repair commands instead of one opaque auth file.
 
@@ -19,7 +19,7 @@ Using the official Codex CLI rather than OpenCode? The sibling project [`codex-m
 - **Rotation** — health-scored hybrid selection picks the best enabled account per request, with cooldowns, automatic token refresh, and failover on rate limits.
 - **Model catalog** — 12 base models covering 65 variants: GPT-6.1 Sol/Terra, GPT-6 Astra/Sol/Luna, the GPT-5.6 tiers, GPT-5.5, and more, routed through the stateless Codex contract (`store: false` + `reasoning.encrypted_content`).
 - **Quota in the prompt** — the TUI prompt line shows remaining quota for the serving account, the whole pool, or banked reset credits, with rotating screens.
-- **`codex-*` tools** — 24 in-session tools for switching, labeling, tagging, limits, diagnostics, and repair.
+- **`codex-*` tools** — 26 in-session tools for switching, labeling, tagging, limits, diagnostics, and repair.
 - **Standalone CLI** — the same package runs `status`, `list`, `limits`, `doctor`, and friends directly — no agent, no token cost.
 - **OpenCode V2** — OpenCode 2.0.16+ loads the plugin through a V2 adapter that shares the account pool and request pipeline.
 - **Keychain option** — `CODEX_KEYCHAIN=1` stores the pool in macOS Keychain, Windows Credential Manager, or Linux libsecret.
@@ -91,12 +91,12 @@ opencode auth login   # OpenAI -> Codex OAuth (Add account — ChatGPT Plus/Pro)
 
 ## Command map
 
-Two surfaces: **25 `codex-*` tools** inside an OpenCode session, and a standalone CLI for everything else. The full argument reference is in [docs/tools-and-cli.md](docs/tools-and-cli.md).
+Two surfaces: **26 `codex-*` tools** inside an OpenCode session, and a standalone CLI for everything else. The full argument reference is in [docs/tools-and-cli.md](docs/tools-and-cli.md).
 
 | Group | Tools | Purpose |
 | --- | --- | --- |
 | Setup | `codex-setup`, `codex-help`, `codex-next` | guided first-run checklist, help by topic, suggested next action |
-| Accounts | `codex-status`, `codex-list`, `codex-switch`, `codex-enable`, `codex-remove` | inspect the pool, pin or switch the active account, re-enable or drop entries |
+| Accounts | `codex-status`, `codex-list`, `codex-switch`, `codex-account-enabled`, `codex-enable`, `codex-remove` | inspect the pool, pin or switch the active account, include or exclude one account from automatic routing, re-enable or drop entries |
 | Identity | `codex-label`, `codex-tag`, `codex-note` | name accounts, group them with tags, attach private notes |
 | Quota | `codex-limits`, `codex-warm`, `codex-reset` | per-account and pool quota, open usage windows, banked reset credits |
 | Health | `codex-health`, `codex-doctor`, `codex-diag`, `codex-dashboard`, `codex-metrics`, `codex-refresh` | health view, diagnostics plus safe repairs, redacted snapshots, counters |

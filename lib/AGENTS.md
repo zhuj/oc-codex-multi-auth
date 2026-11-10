@@ -8,7 +8,7 @@ prompts/model catalog, quota + TUI support, tools, terminal UI.
 ```text
 lib/
 ├── accounts.ts             # AccountManager facade composing the accounts/ services; keeps the pre-split public API
-├── accounts/               # state (registry + per-family cursors), persistence (debounced saves), rotation, rate-limits, recovery (auth-failure tracking + ~/.codex hydration), stale-state, pool-identity, warm + warm-request + warm-recovery
+├── accounts/               # state (registry + per-family cursors), disabled (shared disable provenance), persistence (debounced saves), rotation, rate-limits, recovery (auth-failure tracking + ~/.codex hydration), stale-state, pool-identity, warm + warm-request + warm-recovery
 ├── auth/                   # auth (PKCE + token exchange), server (port-1455 callback), loopback-flow (listener-first shared session), device-code, login-runner (headless login), browser, scopes, plan-tier, token-utils (JWT claims)
 ├── prompts/                # codex (model families + prompt-template fetch/ETag cache), codex-instructions (bundled offline fallback), opencode-codex, codex-opencode-bridge
 ├── request/                # request-transformer (URL/body), fetch-helpers (headers, error mapping, refresh), response-handler (SSE→JSON, empty-response, stall timeout), retry-budget, rate-limit-backoff
@@ -22,7 +22,7 @@ lib/
 ├── opencode-v2-rpc.ts      # CodexStatusRpc RPC definition (status method)
 ├── opencode-v2-status.ts   # plugin-side quota/accounts formatting for the status RPC
 ├── opencode-v2-tui.ts      # V2 TUI slots: status line, accounts sidebar, palette + /codex-accounts commands
-├── tools/                  # index (ToolContext + registry), args (shared arg constants), doctor-repair, refresh-account + 25 `codex-*` factories — see lib/tools/AGENTS.md
+├── tools/                  # index (ToolContext + registry), args (shared arg constants), doctor-repair, refresh-account + 26 `codex-*` factories — see lib/tools/AGENTS.md
 ├── ui/                     # ansi, auth-menu, beginner, confirm, format, runtime, select, theme — terminal UI
 ├── types/                  # dependency type shims (napi-rs-keyring.d.ts)
 ├── account-display.ts      # account identity rendering + maskEmail privacy

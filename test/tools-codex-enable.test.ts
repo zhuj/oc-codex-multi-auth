@@ -9,7 +9,8 @@ import {
 } from "../lib/accounts/state.js";
 import { resolveDisplayEmail } from "../lib/account-display.js";
 
-vi.mock("../lib/storage.js", () => ({
+vi.mock("../lib/storage.js", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/storage.js")>(),
 	loadAccounts: vi.fn(),
 	withAccountStorageTransaction: vi.fn(),
 }));
@@ -69,6 +70,12 @@ function buildCtx(options: { pickIndex?: number | null } = {}): ToolContext {
 		cachedAccountManagerRef: { current: null },
 		accountManagerPromiseRef: { current: null },
 		invalidateAccountManagerCache: vi.fn(),
+		manualAccountOverrideIdentityRef: { current: null },
+		withAccountManagerMutation: async <T>(mutation: () => Promise<T>, shouldReload: (result: T) => boolean): Promise<T> => {
+			const result = await mutation();
+			if (shouldReload(result)) await AccountManager.loadFromDisk();
+			return result;
+		},
 	};
 	return ctx as unknown as ToolContext;
 }

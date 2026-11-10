@@ -18,6 +18,8 @@ import type { AccountMetadataV3, AccountStorageV3 } from "../lib/storage.js";
 import * as loadSaveModule from "../lib/storage/load-save.js";
 import * as loggerModule from "../lib/logger.js";
 
+type StoredMergeRecord = Parameters<typeof mergeStoredAccountPair>[0];
+
 function createTokenResult(
 	accountId: string,
 	refreshToken: string,
@@ -269,7 +271,7 @@ describe("login-runner persistAccountPool", () => {
 
 describe("login-runner selection finalization", () => {
 	it("applies flagged-account fallbacks without overwriting resolved ids", () => {
-		const selection = resolveAccountSelection({
+		const token: TokenSuccessWithAccount = {
 			type: "success",
 			access: "access-token",
 			refresh: "refresh-token",
@@ -278,7 +280,8 @@ describe("login-runner selection finalization", () => {
 			accountIdOverride: "resolved-account",
 			organizationIdOverride: "resolved-org",
 			accountLabel: "Resolved label",
-		});
+		};
+		const selection = resolveAccountSelection(token);
 
 		const updated = applyAccountSelectionFallbacks(selection, {
 			accountIdOverride: "flagged-account",
@@ -380,7 +383,8 @@ describe("login-runner selection finalization", () => {
 		await expect(
 			result,
 		).rejects.not.toThrow("persist failed");
-		const wrapped = await result.catch((error) => error as Error & { cause?: unknown });
+		const wrapped: unknown = await result.catch((error: unknown) => error);
+		if (!(wrapped instanceof Error)) throw new Error("Expected persistence failure");
 
 		expect(wrapped.cause).toBe(persistError);
 		expect(wrapped.message).not.toContain("persist failed");
@@ -404,9 +408,10 @@ describe("login-runner selection finalization", () => {
 			);
 		});
 
-		const wrapped = await persistResolvedAccountSelection(selection, {
+		const wrapped: unknown = await persistResolvedAccountSelection(selection, {
 			persistSelections,
-		}).catch((error) => error as Error & { cause?: unknown });
+		}).catch((error: unknown) => error);
+		if (!(wrapped instanceof Error)) throw new Error("Expected persistence failure");
 
 		expect(wrapped.message).toBe("Failed to persist authenticated account selections.");
 		expect(wrapped.message).not.toContain("token-file");
@@ -449,7 +454,7 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 	});
 
 	it("falls back to the older token when the newer token is genuinely absent (undefined)", () => {
-		const older = {
+		const older: StoredMergeRecord = {
 			addedAt: 1_000,
 			lastUsed: 1_000,
 			rateLimitResetTimes: {},
@@ -457,7 +462,7 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 			accessToken: "older-access",
 			expiresAt: 2_000,
 		};
-		const newer = {
+		const newer: StoredMergeRecord = {
 			addedAt: 2_000,
 			lastUsed: 2_000,
 			rateLimitResetTimes: {},
@@ -508,14 +513,14 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 
 	it("carries the winning stamp's provenance through the quota-exhaustion merge", () => {
 		const now = Date.now();
-		const a = {
+		const a: StoredMergeRecord = {
 			addedAt: 1,
 			lastUsed: 1,
 			rateLimitResetTimes: {},
 			quotaExhaustedUntil: now + 86_400_000,
 			quotaExhaustedStampAt: now - 3_600_000,
 		};
-		const b = {
+		const b: StoredMergeRecord = {
 			addedAt: 2,
 			lastUsed: 2,
 			rateLimitResetTimes: {},
@@ -534,13 +539,13 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 
 	it("keeps the later doctor-clear tombstone when no stamp survives the merge", () => {
 		const now = Date.now();
-		const a = {
+		const a: StoredMergeRecord = {
 			addedAt: 1,
 			lastUsed: 1,
 			rateLimitResetTimes: {},
 			quotaExhaustedClearedAt: now - 3_600_000,
 		};
-		const b = {
+		const b: StoredMergeRecord = {
 			addedAt: 2,
 			lastUsed: 2,
 			rateLimitResetTimes: {},
@@ -554,6 +559,25 @@ describe("mergeStoredAccountPair (credential merge semantics)", () => {
 		expect(merged.quotaExhaustedUntil).toBeUndefined();
 		expect(merged.quotaExhaustedStampAt).toBeUndefined();
 		expect(merged.quotaExhaustedClearedAt).toBe(now - 60_000);
+	});
+
+	it("preserves user-disable provenance when login merges stored records", () => {
+		const enabled: StoredMergeRecord = {
+			addedAt: 1,
+			lastUsed: 1,
+			rateLimitResetTimes: {},
+			enabled: true,
+		};
+		const disabled: StoredMergeRecord = {
+			addedAt: 2,
+			lastUsed: 2,
+			rateLimitResetTimes: {},
+			enabled: false,
+			userDisabled: true,
+		};
+
+		expect(mergeStoredAccountPair(enabled, disabled).userDisabled).toBe(true);
+		expect(mergeStoredAccountPair(disabled, enabled).userDisabled).toBe(true);
 	});
 });
 

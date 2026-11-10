@@ -251,6 +251,7 @@ CLI, run it from inside a real project to reach that project's pool, or pass
 | `retryAllAccountsRateLimited` | `CODEX_AUTH_RETRY_ALL_RATE_LIMITED` | boolean | `true` | — | wait and retry when every account is rate-limited |
 | `retryAllAccountsMaxWaitMs` | `CODEX_AUTH_RETRY_ALL_MAX_WAIT_MS` | number (ms) | `0` | ≥0; **no 24h ceiling** | cap on the all-accounts-limited wait. A positive bound applies unchanged; `0` asks to wait as long as the backend requires, which an interactive request caps at a 10-minute ceiling unless `CODEX_RETRY_ALL_UNBOUNDED=1` |
 | `retryAllAccountsMaxRetries` | `CODEX_AUTH_RETRY_ALL_MAX_RETRIES` | integer | `Infinity` | int ≥0 | max attempts in the all-limited loop (omit the key for unlimited) |
+| `rateLimitJitterFactor` | `CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR` | number | `0.2` | file: 0 to 1; env: clamped 0 to 1 | jitter for short and all-account rate-limit waits only; empty-response retry jitter remains `0.2` |
 | `emptyResponseMaxRetries` | `CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES` | integer | `2` | int ≥0 | retries after an empty SSE/response body |
 | `emptyResponseRetryDelayMs` | `CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS` | number (ms) | `1000` | 0–86400000 | delay between empty-response retries |
 | `fetchTimeoutMs` | `CODEX_AUTH_FETCH_TIMEOUT_MS` | number (ms) | `60000` | 1000–86400000 | upstream fetch timeout |
@@ -371,6 +372,12 @@ quota window consumes `rateLimitShort` and retries the same account; anything
 longer, an exhausted window, or a spent `rateLimitShort` budget rotates to the
 next account, and when every account is limited the wait-and-retry loop
 consumes `rateLimitGlobal`.
+
+Set `"rateLimitJitterFactor": 0.2` in the runtime config to control jitter on
+short and all-account rate-limit waits. `CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR=0.2`
+takes precedence over JSON. File values outside `0` to `1` are rejected;
+environment values are clamped to that range. Empty-response retries keep
+their fixed `0.2` jitter.
 
 ### Quota percentage display
 
@@ -658,6 +665,25 @@ beginners who prefer quick failures and clear recovery over long retry loops.
 It forces `retryProfile` to `conservative`, empties `retryBudgetOverrides`,
 sets `retryAllAccountsRateLimited` to `false`, and caps
 `retryAllAccountsMaxRetries` at `1`.
+
+### Account automatic-routing eligibility
+
+Use `codex-account-enabled index=2 enabled=false` to persistently exclude an
+account from automatic `hybrid`, `sticky`, `round-robin`, and `custom` selection without
+deleting its credentials. Re-enable it with
+`codex-account-enabled index=2 enabled=true`. The persisted `userDisabled`
+metadata records operator intent separately from temporary unavailability such
+as missing OAuth scopes, quota windows, cooldowns, request-local exclusions, or
+an empty local token bucket. Plugin auto-disable notes remain independent of this
+preference: `codex-account-enabled` does not clear them. Use `codex-enable` to
+explicitly recover an auto-disabled account; it also clears user disablement.
+
+`codex-switch index=2` may explicitly select a user-disabled account. That
+override is process-local and ends on another explicit switch, when
+`codex-account-enabled enabled=true` re-enables that account, when the account
+leaves the pool, or on process restart. It never bypasses strict model pools,
+OAuth scope checks, automatic auth/workspace disablement, quotas, cooldowns, retry exclusions, or token-bucket
+restrictions.
 
 ### Environment variables without a config field
 

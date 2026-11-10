@@ -69,6 +69,8 @@ function buildCtx(maskEmail: boolean): ToolContext {
 		supportsInteractiveMenus: () => false,
 		cachedAccountManagerRef: { current: null },
 		accountManagerPromiseRef: { current: null },
+		reloadCachedAccountManager: vi.fn(async () => {}),
+		withAccountManagerMutation: async <T>(mutation: () => Promise<T>) => mutation(),
 	};
 	return ctx as unknown as ToolContext;
 }
