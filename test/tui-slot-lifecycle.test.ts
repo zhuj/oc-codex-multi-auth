@@ -165,7 +165,7 @@ describe("TUI status slot lifecycle", () => {
 			await writeSessionQuotaEntry("FAKE_SESSION", { accountKey: createUsageAccountKey(account), snapshot: createTuiQuotaSnapshot({ ...identity, fetchedAt: fetchedAt + 1, limits: [] }) }, dir);
 			const updated = Promise.withResolvers<void>();
 			mocks.onSignal = (value) => { if (value && typeof value === "object" && "fetchedAt" in value && value.fetchedAt === fetchedAt) updated.resolve(); };
-			await vi.advanceTimersByTimeAsync(1_000);
+			await vi.advanceTimersByTimeAsync(10_000);
 			await updated.promise;
 			if (!node || typeof node !== "object" || !("content" in node)) throw new Error("missing status node");
 			expect(node.content).toContain("50%");
@@ -196,7 +196,7 @@ describe("TUI status slot lifecycle", () => {
 			const node = h.plugin()?.slots["session_prompt_right"]?.({}, { session_id: "FAKE_SESSION" });
 			if (!node || typeof node !== "object" || !("content" in node)) throw new Error("missing status node");
 			if (rowWidth) Object.assign(node, { parent: { primaryAxis: "row", width: rowWidth, getChildren: () => [node, {}] } });
-			await vi.advanceTimersByTimeAsync(500);
+			await vi.advanceTimersByTimeAsync(2_500);
 			return String(node.content);
 		};
 
