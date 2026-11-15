@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { LOG_DIR } from "../lib/logger.js";
+import { AUTH_FAILURE_DISABLE_NOTE_MARKER } from "../lib/accounts/disabled.js";
 
 const { rewriteUrlForCodexMock } = vi.hoisted(() => ({
 	rewriteUrlForCodexMock: vi.fn((url: string) => url),
@@ -157,6 +158,7 @@ vi.mock("../lib/config.js", () => ({
 	getRateLimitToastDebounceMs: (config: import("../lib/types.js").PluginConfig) => config.rateLimitToastDebounceMs ?? 60_000,
 	getRetryAllAccountsMaxRetries: (config: import("../lib/types.js").PluginConfig) => config.retryAllAccountsMaxRetries ?? Infinity,
 	getRetryAllAccountsMaxWaitMs: (config: import("../lib/types.js").PluginConfig) => config.retryAllAccountsMaxWaitMs ?? 0,
+	getRateLimitJitterFactor: () => 0.2,
 	getRetryAllAccountsRateLimited: (config: import("../lib/types.js").PluginConfig) => config.retryAllAccountsRateLimited ?? true,
 	getUnsupportedCodexPolicy: vi.fn(
 		(config: import("../lib/types.js").PluginConfig) =>
@@ -336,14 +338,20 @@ const mockStorage = {
 	version: 3 as const,
 	accounts: [] as Array<{
 		accountId?: string;
+		accountUserId?: string;
 		organizationId?: string;
 		accountIdSource?: string;
 		accountLabel?: string;
+		planType?: string;
+		accountTags?: string[];
+		accountNote?: string;
 		email?: string;
 		refreshToken: string;
 		accessToken?: string;
 		expiresAt?: number;
 		enabled?: boolean;
+		userDisabled?: boolean;
+		oauthScope?: string;
 		addedAt?: number;
 		lastUsed?: number;
 		coolingDownUntil?: number;
@@ -356,6 +364,8 @@ const mockStorage = {
 	activeIndexByFamily: {} as Record<string, number>,
 };
 
+let storageBackedAccountManager = false;
+
 /** Records every quota-exhaustion block the request path applies (issue #218). */
 const mockQuotaExhaustionCalls: Array<{
 	resetAtMs: number;
@@ -365,13 +375,21 @@ const mockQuotaExhaustionCalls: Array<{
 
 type MockManagedAccount = {
 	index: number;
-	enabled?: boolean;
 	accountId?: string;
 	accountUserId?: string;
+	organizationId?: string;
+	accountIdSource?: string;
+	accountLabel?: string;
+	planType?: string;
 	email?: string;
 	refreshToken: string;
+	enabled?: boolean;
+	userDisabled?: boolean;
 	addedAt?: number;
 	accountNote?: string;
+	lastUsed?: number;
+	coolingDownUntil?: number;
+	cooldownReason?: string;
 	/** `false` makes rotation skip it, standing in for rate-limited/cooling down. */
 	selectable?: boolean;
 };
@@ -388,7 +406,13 @@ const setMockManagedAccounts = (
 ) => {
 	mockManagedAccounts.length = 0;
 	accounts.forEach((account, index) =>
-		mockManagedAccounts.push({ ...account, index, addedAt: account.addedAt ?? index }),
+		mockManagedAccounts.push({
+			...account,
+			index,
+			addedAt: account.addedAt ?? index,
+			enabled: account.enabled ?? !account.userDisabled,
+			userDisabled: account.userDisabled ?? false,
+		}),
 	);
 };
 
@@ -520,8 +544,29 @@ vi.mock("../lib/accounts.js", () => {
 		private get accounts(): MockManagedAccount[] {
 			return mockManagedAccounts;
 		}
+		private manualOverrideIndex: number | null = null;
 
 		static async loadFromDisk() {
+			if (storageBackedAccountManager) {
+				setMockManagedAccounts(
+					mockStorage.accounts.map((account) => ({
+						accountId: account.accountId,
+						accountUserId: account.accountUserId,
+						organizationId: account.organizationId,
+						accountIdSource: account.accountIdSource,
+						accountLabel: account.accountLabel,
+						planType: account.planType,
+						email: account.email,
+						refreshToken: account.refreshToken,
+						enabled: account.enabled,
+						userDisabled: account.userDisabled,
+						addedAt: account.addedAt,
+						lastUsed: account.lastUsed,
+						coolingDownUntil: account.coolingDownUntil,
+						cooldownReason: account.cooldownReason,
+					})),
+				);
+			}
 			return new MockAccountManager();
 		}
 
@@ -536,12 +581,59 @@ vi.mock("../lib/accounts.js", () => {
 			);
 		}
 
-		getCurrentOrNextForFamily() {
-			return this.selectableAccounts()[0] ?? null;
+		private getManualOverrideAccount(excludedIndices?: ReadonlySet<number>) {
+			if (this.manualOverrideIndex === null) return null;
+			const account = this.accounts[this.manualOverrideIndex];
+			if (!account || !account.userDisabled) {
+				this.manualOverrideIndex = null;
+				return null;
+			}
+			if (excludedIndices?.has(account.index)) return null;
+			if (account.selectable === false) return null;
+			if (
+				typeof account.coolingDownUntil === "number" &&
+				account.coolingDownUntil > Date.now()
+			) {
+				return null;
+			}
+			return account;
 		}
 
-		getCurrentOrNextForFamilyHybrid() {
-			return this.selectableAccounts()[0] ?? null;
+		getCurrentOrNextForFamily(
+			_family?: string,
+			_model?: string,
+			_preferredAccountIds?: readonly string[],
+			_strictPreferredPool?: boolean,
+			excludedIndices?: ReadonlySet<number>,
+		) {
+			return this.getManualOverrideAccount(excludedIndices) ??
+				this.selectableAccounts(excludedIndices).find((account) => account.enabled !== false) ??
+				null;
+		}
+
+		getCurrentOrNextForFamilyHybrid(
+			_family?: string,
+			_model?: string,
+			_options?: unknown,
+			_preferredAccountIds?: readonly string[],
+			_strictPreferredPool?: boolean,
+			excludedIndices?: ReadonlySet<number>,
+		) {
+			return this.getManualOverrideAccount(excludedIndices) ??
+				this.selectableAccounts(excludedIndices).find((account) => account.enabled !== false) ??
+				null;
+		}
+
+		setManualAccountOverride(index: number | null) {
+			if (index === null) {
+				this.manualOverrideIndex = null;
+				return null;
+			}
+			if (!Number.isInteger(index)) return null;
+			const account = this.accounts[index];
+			if (!account) return null;
+			this.manualOverrideIndex = account.userDisabled ? index : null;
+			return account;
 		}
 
 		getAccountForStrategy(
@@ -555,11 +647,22 @@ vi.mock("../lib/accounts.js", () => {
 		) {
 			// Honouring `excludedIndices` is what lets a test rotate across several
 			// accounts: without it the caller re-selects account 0 and bails out.
-			const available = this.selectableAccounts(excludedIndices);
+			const manual = this.getManualOverrideAccount(excludedIndices);
+			const manualInPool =
+				manual &&
+				(poolMode !== "strict" ||
+					preferredAccountIds.length === 0 ||
+					(manual.accountId !== undefined && preferredAccountIds.includes(manual.accountId)));
+			if (manualInPool) return manual;
+			const available = this.selectableAccounts(excludedIndices).filter(
+				(account) => account.enabled !== false,
+			);
 			const preferred = available.find(
 				(account) =>
 					account.accountId !== undefined &&
-					preferredAccountIds.includes(account.accountId),
+					preferredAccountIds.includes(account.accountId) &&
+					account.enabled !== false &&
+					!excludedIndices?.has(account.index),
 			);
 			if (preferred) return preferred;
 			if (poolMode === "strict" && preferredAccountIds.length > 0) return null;
@@ -583,11 +686,14 @@ vi.mock("../lib/accounts.js", () => {
 		recordRateLimit() {}
 		recordFailure() {}
 
-		toAuthDetails() {
+		toAuthDetails(account?: (typeof this.accounts)[number]) {
+			const selected = account ?? this.accounts[0];
 			return {
 				type: "oauth" as const,
-				access: "access-token",
-				refresh: "refresh-token",
+				access: storageBackedAccountManager
+					? `access-${selected?.accountId ?? selected?.refreshToken ?? "missing"}`
+					: "access-token",
+				refresh: selected?.refreshToken ?? "refresh-token",
 				expires: Date.now() + 60_000,
 			};
 		}
@@ -702,6 +808,7 @@ type PluginType = {
 	tool: {
 		"codex-list": OptionalToolExecute<{ tag?: string; format?: string; includeSensitive?: boolean }>;
 		"codex-switch": OptionalToolExecute<{ index?: number }>;
+		"codex-account-enabled": ToolExecute<{ index?: number; enabled: boolean }>;
 		"codex-warm": ToolExecute;
 		"codex-status": OptionalToolExecute<{ format?: string; includeSensitive?: boolean }>;
 		"codex-limits": OptionalToolExecute<{ format?: string; includeSensitive?: boolean }>;
@@ -743,6 +850,8 @@ describe("OpenAIOAuthPlugin", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks();
+		storageBackedAccountManager = false;
+		resetMockManagedAccounts();
 		mockClient = createMockClient();
 
 		mockStorage.accounts = [];
@@ -755,6 +864,7 @@ describe("OpenAIOAuthPlugin", () => {
 	});
 
 	afterEach(() => {
+		storageBackedAccountManager = false;
 		vi.restoreAllMocks();
 		vi.unstubAllEnvs();
 	});
@@ -780,6 +890,7 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(plugin.tool).toBeDefined();
 			expect(plugin.tool["codex-list"]).toBeDefined();
 			expect(plugin.tool["codex-switch"]).toBeDefined();
+			expect(plugin.tool["codex-account-enabled"]).toBeDefined();
 			expect(plugin.tool["codex-warm"]).toBeDefined();
 			expect(plugin.tool["codex-status"]).toBeDefined();
 			expect(plugin.tool["codex-limits"]).toBeDefined();
@@ -1218,6 +1329,7 @@ describe("OpenAIOAuthPlugin", () => {
 				getMinWaitTimeForFamily: () => 0,
 				hasRefreshToken: () => true,
 				saveToDisk: async () => {},
+				setManualAccountOverride: () => null,
 			} as unknown as InstanceType<typeof accountsModule.AccountManager>;
 
 			const spy = vi
@@ -1260,6 +1372,7 @@ describe("OpenAIOAuthPlugin", () => {
 				getAccountsSnapshot: () => [],
 				hasRefreshToken: () => false,
 				saveToDisk: async () => {},
+				setManualAccountOverride: () => null,
 			} as unknown as InstanceType<typeof accountsModule.AccountManager>);
 
 			const getAuth = async () => ({ type: "apikey" as const, key: "test" });
@@ -1688,6 +1801,30 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("cooldown");
 		});
 
+		it("distinguishes user-disabled accounts from temporary unavailability", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "r1", enabled: false, userDisabled: true },
+				{
+					refreshToken: "r2",
+					enabled: false,
+					accountNote: "Re-auth required for missing OAuth scope(s): email.",
+				},
+			];
+
+			const result = parseJsonOutput<{
+				accounts: Array<{ userDisabled: boolean; statuses: string[] }>;
+			}>(await plugin.tool["codex-list"].execute({ format: "json" }));
+
+			expect(result.accounts[0]).toMatchObject({
+				userDisabled: true,
+				statuses: expect.arrayContaining(["user-disabled"]),
+			});
+			expect(result.accounts[1]).toMatchObject({
+				userDisabled: false,
+				statuses: expect.arrayContaining(["temporarily-disabled"]),
+			});
+		});
+
 		it("filters accounts by tag", async () => {
 			mockStorage.accounts = [
 				{ refreshToken: "r1", email: "user1@example.com", accountTags: ["work"] },
@@ -1696,6 +1833,174 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-list"].execute({ tag: "work" });
 			expect(result).toContain("user1@example.com");
 			expect(result).not.toContain("user2@example.com");
+		});
+	});
+
+	describe("codex-account-enabled tool", () => {
+		it("returns an error when no accounts exist", async () => {
+			const result = await plugin.tool["codex-account-enabled"].execute({
+				index: 1,
+				enabled: false,
+			});
+
+			expect(result).toContain("No Codex accounts configured");
+		});
+
+		it("validates the 1-based account index", async () => {
+			mockStorage.accounts = [{ refreshToken: "r1" }];
+
+			const fractional = await plugin.tool["codex-account-enabled"].execute({
+				index: 1.5,
+				enabled: false,
+			});
+			const outOfRange = await plugin.tool["codex-account-enabled"].execute({
+				index: 2,
+				enabled: false,
+			});
+
+			expect(fractional).toContain("Invalid account number");
+			expect(outOfRange).toContain("Invalid account number");
+		});
+
+		it("persists disable and enable as idempotent user preference mutations", async () => {
+			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+
+			expect(
+				await plugin.tool["codex-account-enabled"].execute({ index: 1, enabled: false }),
+			).toContain("Disabled");
+			expect(mockStorage.accounts[0]).toMatchObject({
+				enabled: false,
+				userDisabled: true,
+			});
+			expect(
+				await plugin.tool["codex-account-enabled"].execute({ index: 1, enabled: false }),
+			).toContain("already disabled");
+
+			expect(
+				await plugin.tool["codex-account-enabled"].execute({ index: 1, enabled: true }),
+			).toContain("Enabled");
+			expect(mockStorage.accounts[0]?.enabled).toBeUndefined();
+			expect(mockStorage.accounts[0]?.userDisabled).toBeUndefined();
+		});
+
+		it("does not bypass a missing-scope disable when user preference is enabled", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "r1",
+					enabled: false,
+					userDisabled: true,
+					accountNote: "Re-auth required for missing OAuth scope(s): email.",
+				},
+			];
+
+			await plugin.tool["codex-account-enabled"].execute({ index: 1, enabled: true });
+
+			expect(mockStorage.accounts[0]?.enabled).toBe(false);
+			expect(mockStorage.accounts[0]?.userDisabled).toBeUndefined();
+		});
+
+		it("does not clear an automatic disable when the routing preference is enabled", async () => {
+			mockStorage.accounts = [{
+				refreshToken: "r1", enabled: false, userDisabled: true,
+				accountNote: AUTH_FAILURE_DISABLE_NOTE_MARKER,
+			}];
+			await plugin.tool["codex-account-enabled"].execute({ index: 1, enabled: true });
+			expect(mockStorage.accounts[0]?.enabled).toBe(false);
+			expect(mockStorage.accounts[0]?.userDisabled).not.toBe(true);
+			expect(mockStorage.accounts[0]?.accountNote).toBe(AUTH_FAILURE_DISABLE_NOTE_MARKER);
+		});
+
+		it("does not claim success or mutate durable state when persistence fails", async () => {
+			const storage = await import("../lib/storage.js");
+			mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
+			vi.mocked(storage.withAccountStorageTransaction).mockImplementationOnce(
+				async (callback) =>
+					callback(cloneMockStorage(), async () => {
+						throw new Error("disk full");
+					}),
+			);
+
+			const result = await plugin.tool["codex-account-enabled"].execute({
+				index: 1,
+				enabled: false,
+			});
+
+			expect(result).toContain("Failed to disable");
+			expect(mockStorage.accounts[0]?.enabled).toBeUndefined();
+			expect(mockStorage.accounts[0]?.userDisabled).toBeUndefined();
+		});
+
+		it("waits for an in-flight initial load before codex-enable mutates storage", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const originalLoad = AccountManager.loadFromDisk.bind(AccountManager);
+			storageBackedAccountManager = true;
+			mockStorage.accounts = [{ accountId: "A", refreshToken: "rA", enabled: false, userDisabled: true }];
+			let release: (() => void) | undefined;
+			let started: (() => void) | undefined;
+			const held = new Promise<void>((resolve) => { release = resolve; });
+			const loadStarted = new Promise<void>((resolve) => { started = resolve; });
+			vi.spyOn(AccountManager, "loadFromDisk").mockImplementationOnce(async () => {
+				const stale = await originalLoad();
+				started?.();
+				await held;
+				return stale;
+			});
+			const loading = plugin.auth.loader(async () => ({
+				type: "oauth" as const, access: "access-token", refresh: "refresh-token",
+				expires: Date.now() + 60_000, multiAccount: true,
+			}), { options: {}, models: {} });
+			await loadStarted;
+			const enable = plugin.tool["codex-enable"].execute({ index: 1 });
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const enabledBeforeLoad = mockStorage.accounts[0]?.enabled !== false;
+			release?.();
+			await loading;
+			await enable;
+			expect(enabledBeforeLoad).toBe(false);
+			expect(mockStorage.accounts[0]?.enabled).not.toBe(false);
+			expect(mockStorage.accounts[0]?.userDisabled).not.toBe(true);
+		});
+
+		it("flushes a pending cooldown before replacing the manager", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+			const flushSpy = vi.spyOn(AccountManager.prototype, "flushPendingSave");
+			const disposeSpy = vi.spyOn(AccountManager.prototype, "disposeShutdownHandler");
+			const cooldownUntil = Date.now() + 60_000;
+			storageBackedAccountManager = true;
+			mockStorage.accounts = [
+				{ accountId: "A", refreshToken: "rA" },
+				{ accountId: "B", refreshToken: "rB" },
+			];
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			loadFromDiskSpy.mockClear();
+			flushSpy.mockClear();
+			disposeSpy.mockClear();
+			flushSpy.mockImplementationOnce(async () => {
+				Object.assign(mockStorage.accounts[0]!, {
+					coolingDownUntil: cooldownUntil,
+					cooldownReason: "rate-limit",
+				});
+			});
+
+			await plugin.tool["codex-account-enabled"].execute({ index: 2, enabled: false });
+
+			const reloaded = await loadFromDiskSpy.mock.results[0]!.value;
+			expect(reloaded.getAccountsSnapshot()[0]).toMatchObject({
+				coolingDownUntil: cooldownUntil,
+				cooldownReason: "rate-limit",
+			});
+			expect(flushSpy.mock.invocationCallOrder[0]).toBeLessThan(
+				loadFromDiskSpy.mock.invocationCallOrder[0]!,
+			);
+			expect(disposeSpy).toHaveBeenCalledTimes(1);
 		});
 	});
 
@@ -1749,6 +2054,117 @@ describe("OpenAIOAuthPlugin", () => {
 
 			await plugin.tool["codex-switch"].execute({ index: 2 });
 			expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+		});
+
+		it("flushes a pending cooldown before replacing the manager", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+			const flushSpy = vi.spyOn(AccountManager.prototype, "flushPendingSave");
+			const disposeSpy = vi.spyOn(AccountManager.prototype, "disposeShutdownHandler");
+			const cooldownUntil = Date.now() + 60_000;
+			storageBackedAccountManager = true;
+			mockStorage.accounts = [
+				{ accountId: "A", refreshToken: "rA" },
+				{ accountId: "B", refreshToken: "rB" },
+			];
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			loadFromDiskSpy.mockClear();
+			flushSpy.mockClear();
+			disposeSpy.mockClear();
+			flushSpy.mockImplementationOnce(async () => {
+				Object.assign(mockStorage.accounts[0]!, {
+					coolingDownUntil: cooldownUntil,
+					cooldownReason: "rate-limit",
+				});
+			});
+
+			await plugin.tool["codex-switch"].execute({ index: 2 });
+
+			const reloaded = await loadFromDiskSpy.mock.results[0]!.value;
+			expect(reloaded.getAccountsSnapshot()[0]).toMatchObject({
+				coolingDownUntil: cooldownUntil,
+				cooldownReason: "rate-limit",
+			});
+			expect(flushSpy.mock.invocationCallOrder[0]).toBeLessThan(
+				loadFromDiskSpy.mock.invocationCallOrder[0]!,
+			);
+			expect(disposeSpy).toHaveBeenCalledTimes(1);
+		});
+
+		it("applies a process-local override when switching to a user-disabled account", async () => {
+			const { AccountManager } = await import("../lib/accounts.js");
+			const overrideSpy = vi.spyOn(
+				AccountManager.prototype,
+				"setManualAccountOverride",
+			);
+			mockStorage.accounts = [
+				{ refreshToken: "r1", enabled: false, userDisabled: true },
+			];
+			storageBackedAccountManager = true;
+			const getAuth = async () => ({
+				type: "oauth" as const,
+				access: "access-token",
+				refresh: "refresh-token",
+				expires: Date.now() + 60_000,
+				multiAccount: true,
+			});
+			await plugin.auth.loader(getAuth, { options: {}, models: {} });
+			overrideSpy.mockClear();
+
+			await plugin.tool["codex-switch"].execute({ index: 1 });
+
+			expect(overrideSpy).toHaveBeenCalledWith(0);
+		});
+
+		it("keeps a manual override bound to its workspace after an earlier account is removed", async () => {
+			const fetchHelpers = await import("../lib/request/fetch-helpers.js");
+			const originalFetch = globalThis.fetch;
+			storageBackedAccountManager = true;
+			mockStorage.accounts = [
+				{ accountId: "A", organizationId: "A", refreshToken: "rA" },
+				{ accountId: "B", organizationId: "B", refreshToken: "rB", enabled: false, userDisabled: true },
+				{ accountId: "C", organizationId: "C", refreshToken: "rC", enabled: false, userDisabled: true },
+				{ accountId: "D", organizationId: "D", refreshToken: "rD" },
+			];
+			vi.mocked(fetchHelpers.createCodexHeaders).mockImplementation(
+				(_request, _accountId, accessToken) =>
+					new Headers({ "x-test-access-token": String(accessToken) }),
+			);
+			globalThis.fetch = vi.fn(async () =>
+				new Response(JSON.stringify({ content: "ok" }), { status: 200 }),
+			);
+
+			try {
+				const getAuth = async () => ({
+					type: "oauth" as const,
+					access: "access-token",
+					refresh: "refresh-token",
+					expires: Date.now() + 60_000,
+					multiAccount: true,
+				});
+				const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
+				await plugin.tool["codex-switch"].execute({ index: 2 });
+				await plugin.tool["codex-remove"].execute({ index: 1, confirm: true });
+				await plugin.tool["codex-account-enabled"].execute({ index: 3, enabled: false });
+				if (!sdk.fetch) throw new Error("Expected plugin fetch implementation");
+
+				await sdk.fetch("https://api.openai.com/v1/responses", {
+					method: "POST",
+					body: JSON.stringify({ model: "gpt-5.1" }),
+				});
+
+				const request = vi.mocked(globalThis.fetch).mock.calls[0]?.[1];
+				expect(new Headers(request?.headers).get("x-test-access-token")).toBe("access-B");
+			} finally {
+				globalThis.fetch = originalFetch;
+			}
 		});
 	});
 
@@ -1830,6 +2246,21 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result.routingVisibility.selectionExplainability[0]).toMatchObject({
 				index: 1,
 				zeroBasedIndex: 0,
+			});
+		});
+
+		it("reports explicit user-disabled provenance in json", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "r1", enabled: false, userDisabled: true },
+			];
+
+			const result = parseJsonOutput<{
+				accounts: Array<{ enabled: boolean; userDisabled: boolean }>;
+			}>(await plugin.tool["codex-status"].execute({ format: "json" }));
+
+			expect(result.accounts[0]).toMatchObject({
+				enabled: false,
+				userDisabled: true,
 			});
 		});
 	});
@@ -2980,6 +3411,7 @@ describe("OpenAIOAuthPlugin", () => {
 			expect(result).toContain("Quickstart");
 			expect(result).toContain("codex-doctor");
 			expect(result).toContain("codex-setup --wizard");
+			expect(result).toContain("codex-account-enabled");
 		});
 
 		it("filters by topic", async () => {
@@ -5018,10 +5450,11 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				recordSuccess: vi.fn(),
 				getMinWaitTimeForFamily: vi.fn(() => 0),
 				shouldShowAccountToast: vi.fn(() => true),
-				markToastShown: vi.fn(),
-				setActiveIndex: vi.fn(() => account),
-				getAccountsSnapshot: vi.fn(() => [account]),
-			};
+			markToastShown: vi.fn(),
+			setActiveIndex: vi.fn(() => account),
+			setManualAccountOverride: vi.fn(),
+			getAccountsSnapshot: vi.fn(() => [account]),
+		};
 		};
 
 		const usingToastCalls = (client: ReturnType<typeof createMockClient>) =>
@@ -5143,6 +5576,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				shouldShowAccountToast: vi.fn(() => false),
 				markToastShown: vi.fn(),
 				setActiveIndex: vi.fn(() => accounts[0]),
+				setManualAccountOverride: vi.fn(() => null),
 				getAccountsSnapshot: vi.fn(() => accounts),
 				disposeShutdownHandler: vi.fn(),
 			};
@@ -5729,6 +6163,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			shouldShowAccountToast: vi.fn(() => false),
 			markToastShown: vi.fn(),
 			setActiveIndex: vi.fn(() => selectedAccount),
+			setManualAccountOverride: vi.fn(),
 			getAccountsSnapshot: vi.fn(() => [
 				{ index: 0, accountId: "acc-1", email: "user1@example.com", refreshToken: "refresh-1" },
 				selectedAccount,
@@ -5855,6 +6290,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				shouldShowAccountToast: vi.fn(() => false),
 				markToastShown: vi.fn(),
 				setActiveIndex: vi.fn(() => overloadedAccount),
+				setManualAccountOverride: vi.fn(),
 				getAccountsSnapshot: vi.fn(() => [overloadedAccount]),
 			};
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
@@ -6192,9 +6628,10 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 			recordSuccess: vi.fn(),
 			shouldShowAccountToast: vi.fn(() => false),
 			markToastShown: vi.fn(),
-			setActiveIndex: vi.fn(() => account),
-			getAccountsSnapshot: vi.fn(() => [account]),
-		};
+				setActiveIndex: vi.fn(() => account),
+				setManualAccountOverride: vi.fn(),
+				getAccountsSnapshot: vi.fn(() => [account]),
+			};
 		vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue(customManager as never);
 		vi.mocked(fetchHelpers.isDefaultAutoFallbackModel).mockReturnValue(true);
 		vi.mocked(fetchHelpers.pickFallbackChainTarget).mockReturnValue("gpt-5.5");
@@ -7225,6 +7662,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				shouldShowAccountToast: () => false,
 				markToastShown: () => {},
 				setActiveIndex: () => accountOne,
+				setManualAccountOverride: vi.fn(),
 				getAccountsSnapshot: () => [accountOne, accountTwo],
 			};
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
@@ -7451,6 +7889,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				shouldShowAccountToast: vi.fn(() => false),
 				markToastShown: vi.fn(),
 				setActiveIndex: vi.fn(() => accounts[0] ?? null),
+				setManualAccountOverride: vi.fn(),
 				getAccountsSnapshot: vi.fn(() => [...accounts]),
 			};
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
@@ -7582,6 +8021,7 @@ describe("OpenAIOAuthPlugin fetch handler", () => {
 				shouldShowAccountToast: vi.fn(() => false),
 				markToastShown: vi.fn(),
 				setActiveIndex: vi.fn(() => deadWorkspace),
+				setManualAccountOverride: vi.fn(),
 				getAccountsSnapshot: vi.fn(() => [deadWorkspace]),
 			};
 			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValueOnce(customManager as never);
@@ -8578,7 +9018,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		logSpy.mockRestore();
 	});
 
-	it("masks the email in the interactive enable/disable confirmation when maskEmail is enabled", async () => {
+	it("disables automatic routing and masks the interactive confirmation", async () => {
 		const cliModule = await import("../lib/cli.js");
 		const configModule = await import("../lib/config.js");
 
@@ -8609,6 +9049,7 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		const logged = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
 		expect(logged).toContain("us***@example.com");
 		expect(logged).not.toContain("user@example.com");
+		expect(mockStorage.accounts[0]).toMatchObject({ enabled: false, userDisabled: true });
 
 		logSpy.mockRestore();
 	});

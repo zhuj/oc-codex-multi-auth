@@ -35,6 +35,7 @@ type MergeableAccountRecord = {
 	lastUsed?: number;
 	addedAt?: number;
 	enabled?: boolean;
+	userDisabled?: boolean;
 	accountId?: string;
 	accountUserId?: string;
 	organizationId?: string;
@@ -97,6 +98,8 @@ export function mergeStoredAccountPair<T extends MergeableAccountRecord>(
 		target.enabled === false || source.enabled === false
 			? false
 			: target.enabled ?? source.enabled;
+	const mergedUserDisabled =
+		target.userDisabled === true || source.userDisabled === true ? true : undefined;
 
 	const targetCoolingDownUntil =
 		typeof target.coolingDownUntil === "number" && Number.isFinite(target.coolingDownUntil)
@@ -190,6 +193,7 @@ export function mergeStoredAccountPair<T extends MergeableAccountRecord>(
 				? newer.tokenRotatedAt
 				: older.tokenRotatedAt,
 		enabled: mergedEnabled,
+		userDisabled: mergedUserDisabled,
 		addedAt: Math.max(target.addedAt ?? 0, source.addedAt ?? 0),
 		lastUsed: Math.max(target.lastUsed ?? 0, source.lastUsed ?? 0),
 		lastSwitchReason: target.lastSwitchReason ?? source.lastSwitchReason,

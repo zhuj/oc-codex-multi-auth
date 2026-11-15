@@ -4,8 +4,8 @@
  */
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
-import { loadAccounts, withAccountStorageTransaction } from "../storage.js";
-import { AccountManager } from "../accounts.js";
+import { getWorkspaceIdentityKey, loadAccounts, withAccountStorageTransaction } from "../storage.js";
+import { isPersistedUserDisabled } from "../accounts/state.js";
 import { logWarn } from "../logger.js";
 import { MODEL_FAMILIES } from "../prompts/codex.js";
 import { clearTuiQuotaSnapshot } from "../tui-quota-cache.js";
@@ -25,8 +25,8 @@ export function createCodexSwitchTool(ctx: ToolContext): ToolDefinition {
 		formatCommandAccountLabel,
 		resolveMaskEmail,
 		getStatusMarker,
-		cachedAccountManagerRef,
-		accountManagerPromiseRef,
+		manualAccountOverrideIdentityRef,
+		withAccountManagerMutation,
 	} = ctx;
 	const definition = tool({
 		description:
@@ -100,10 +100,16 @@ export function createCodexSwitchTool(ctx: ToolContext): ToolDefinition {
 			type SwitchOutcome =
 				| { kind: "invalid"; accountCount: number }
 				| { kind: "save-failed"; label: string }
-				| { kind: "ok"; label: string };
+				| {
+						kind: "ok";
+						label: string;
+						targetIdentity: string;
+						userDisabled: boolean;
+				  };
 
-			const outcome = await withAccountStorageTransaction<SwitchOutcome>(
-				async (current, persist) => {
+			const outcome = await withAccountManagerMutation(
+				async () => {
+					const result = await withAccountStorageTransaction<SwitchOutcome>(async (current, persist) => {
 					const accounts = current?.accounts ?? [];
 					const targetIndex = (resolvedIndex ?? 0) - 1;
 					if (
@@ -144,8 +150,21 @@ export function createCodexSwitchTool(ctx: ToolContext): ToolDefinition {
 						});
 						return { kind: "save-failed", label };
 					}
-					return { kind: "ok", label };
+					return {
+						kind: "ok",
+						label,
+						targetIdentity: account ? getWorkspaceIdentityKey(account) : "",
+						userDisabled: account ? isPersistedUserDisabled(account) : false,
+					};
+					});
+					if (result.kind === "ok") {
+						manualAccountOverrideIdentityRef.current = result.userDisabled
+							? result.targetIdentity
+							: null;
+					}
+					return result;
 				},
+				(result) => result.kind === "ok",
 			);
 
 			if (outcome.kind === "invalid") {
@@ -195,13 +214,6 @@ export function createCodexSwitchTool(ctx: ToolContext): ToolDefinition {
 					error: String(cacheError),
 				});
 			}
-
-			if (cachedAccountManagerRef.current) {
-				const reloadedManager = await AccountManager.loadFromDisk();
-				cachedAccountManagerRef.current = reloadedManager;
-				accountManagerPromiseRef.current = Promise.resolve(reloadedManager);
-			}
-
 			if (ui.v2Enabled) {
 				return [
 					...formatUiHeader(ui, "Switch account"),

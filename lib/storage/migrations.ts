@@ -129,6 +129,8 @@ export interface AccountMetadataV3 {
 	 */
 	tokenRotatedAt?: number;
 	enabled?: boolean;
+	/** Explicit operator preference. Temporary unavailability must not set this flag. */
+	userDisabled?: boolean;
 	addedAt: number;
 	lastUsed: number;
 	lastSwitchReason?: "rate-limit" | "initial" | "rotation";

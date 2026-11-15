@@ -14,6 +14,13 @@
 
 import type { AccountMetadataV3 } from "./migrations.js";
 import { extractAccountUserId } from "../auth/token-utils.js";
+import {
+  AUTH_FAILURE_DISABLE_NOTE_MARKER,
+  WORKSPACE_DEACTIVATED_NOTE_MARKER,
+  hasAutoDisableNote,
+  isPersistedUserDisabled as isUserDisabled,
+  stripAutoDisableNote,
+} from "../accounts/disabled.js";
 
 export type AccountLike = {
   organizationId?: string;
@@ -21,11 +28,13 @@ export type AccountLike = {
   accountUserId?: string;
   accountIdSource?: AccountMetadataV3["accountIdSource"];
   accountLabel?: string;
+  accountNote?: string;
   email?: string;
   refreshToken: string;
   addedAt?: number;
   lastUsed?: number;
   enabled?: boolean;
+  userDisabled?: boolean;
 };
 
 const normalizeWorkspaceIdentityPart = (value: unknown): string | undefined =>
@@ -176,7 +185,7 @@ function isOrgLikeAccount<T extends AccountLike>(account: T): boolean {
 }
 
 /**
- * Resolve the merged `enabled` flag.
+ * Resolve which records govern disable state and its provenance.
  *
  * Default is fail-closed: if either side is explicitly disabled, the merge is
  * disabled. The ONE exception (issue #171): when exactly one side is an
@@ -185,33 +194,58 @@ function isOrgLikeAccount<T extends AccountLike>(account: T): boolean {
  * token duplicate must never silently disable the real account it collapses
  * into — otherwise the canonical account becomes unroutable and unrecoverable.
  */
-function resolveMergedEnabled<T extends AccountLike>(target: T, source: T): boolean | undefined {
+function getDisableStateSources<T extends AccountLike>(target: T, source: T): T[] {
   const targetOrgLike = isOrgLikeAccount(target);
   const sourceOrgLike = isOrgLikeAccount(source);
   const targetTokenDup = !targetOrgLike && target.accountIdSource === "token";
   const sourceTokenDup = !sourceOrgLike && source.accountIdSource === "token";
 
-  if (targetOrgLike && sourceTokenDup) return target.enabled;
-  if (sourceOrgLike && targetTokenDup) return source.enabled;
+  if (targetOrgLike && sourceTokenDup) return [target];
+  if (sourceOrgLike && targetTokenDup) return [source];
+  return [target, source];
+}
 
+function resolveMergedEnabled<T extends AccountLike>(target: T, source: T): boolean | undefined {
+  const sources = getDisableStateSources(target, source);
   // Fail-closed for every other shape (same-identity, two real accounts, etc.).
-  if (target.enabled === false || source.enabled === false) return false;
-  return target.enabled ?? source.enabled;
+  if (sources.some((account) => account.enabled === false)) return false;
+  return sources[0]?.enabled ?? sources[1]?.enabled;
+}
+
+function resolveMergedUserDisabled<T extends AccountLike>(target: T, source: T): boolean | undefined {
+  const sources = getDisableStateSources(target, source);
+  if (sources.some(isUserDisabled)) return true;
+  return sources.find((account) => account.userDisabled !== undefined)?.userDisabled;
 }
 
 function mergeAccountRecords<T extends AccountLike>(target: T, source: T): T {
   const newest = selectNewestAccount(target, source);
   const older = newest === target ? source : target;
+  const merged = { ...older, ...newest };
+  // Notes are editable operator text, but a retained disable must keep its
+  // routing guard. Only records governing that disable may supply attribution.
+  let accountNote = hasAutoDisableNote(merged.accountNote)
+    ? stripAutoDisableNote(merged.accountNote)
+    : merged.accountNote;
+  const disableStateSources = getDisableStateSources(target, source);
+  for (const marker of [AUTH_FAILURE_DISABLE_NOTE_MARKER, WORKSPACE_DEACTIVATED_NOTE_MARKER]) {
+    if (disableStateSources.some(
+      (account) => account.enabled === false && account.accountNote?.includes(marker),
+    )) {
+      accountNote = accountNote ? `${accountNote} ${marker}` : marker;
+    }
+  }
   return {
-    ...older,
-    ...newest,
+    ...merged,
     organizationId: target.organizationId ?? source.organizationId,
     accountId: target.accountId ?? source.accountId,
     accountUserId: target.accountUserId ?? source.accountUserId,
     accountIdSource: target.accountIdSource ?? source.accountIdSource,
     accountLabel: target.accountLabel ?? source.accountLabel,
+    accountNote,
     email: target.email ?? source.email,
     enabled: resolveMergedEnabled(target, source),
+    userDisabled: resolveMergedUserDisabled(target, source),
   };
 }
 

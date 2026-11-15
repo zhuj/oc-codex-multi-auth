@@ -11,6 +11,7 @@ import { MODEL_FAMILIES } from "../prompts/codex.js";
 import {
 	describeDisabledReason,
 	hasAutoDisableNote,
+	isPersistedUserDisabled,
 } from "../accounts/state.js";
 import { recommendBeginnerNextAction } from "../ui/beginner.js";
 import {
@@ -172,6 +173,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 							account.enabled === false
 								? describeDisabledReason(account.accountNote)
 								: null,
+						userDisabled: isPersistedUserDisabled(account),
 						isActive: index === activeIndex,
 						planType: account.planType ?? null,
 						plan: formatPlanType(account.planType) ?? null,
@@ -250,13 +252,15 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 					const badges: string[] = [];
 					if (index === activeIndex)
 						badges.push(formatUiBadge(ui, "active", "accent"));
-					if (account.enabled === false)
+					if (isPersistedUserDisabled(account))
+						badges.push(formatUiBadge(ui, "user-disabled", "danger"));
+					else if (account.enabled === false)
 						badges.push(
 							formatUiBadge(
 								ui,
 								hasAutoDisableNote(account.accountNote)
 									? "auto-disabled"
-									: "disabled",
+									: "temporarily-disabled",
 								"danger",
 							),
 						);
@@ -369,6 +373,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 					{ header: "#", width: 3 },
 					{ header: "Label", width: 42 },
 					{ header: seatHeader, width: seatWidth },
+					{ header: "State", width: 20 },
 					{ header: "Plan", width: 18 },
 					{ header: "Active", width: 6 },
 					{ header: "Rate Limit", width: 16 },
@@ -391,6 +396,11 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 					omitSeat: true,
 				});
 				const active = index === activeIndex ? "Yes" : "No";
+				const state = isPersistedUserDisabled(account)
+					? "user-disabled"
+					: account.enabled === false
+						? "temporarily-disabled"
+						: "enabled";
 				const rateLimit = formatRateLimitEntry(account, now) ?? "None";
 				const cooldown = formatCooldown(account, now) ?? "No";
 				const lastUsed =
@@ -404,6 +414,7 @@ export function createCodexStatusTool(ctx: ToolContext): ToolDefinition {
 							String(index + 1),
 							label,
 							seatSuffixes[index] ?? "-",
+							state,
 							formatPlanType(account.planType) ?? "unknown",
 							active,
 							rateLimit,

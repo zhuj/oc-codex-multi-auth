@@ -25,7 +25,7 @@ docs/
 ├── architecture.md           # public architecture overview
 ├── getting-started.md        # install + auth + first run
 ├── upgrade.md                # version upgrades + retired-name migration
-├── tools-and-cli.md          # 24 codex-* tools + standalone CLI
+├── tools-and-cli.md          # 26 codex-* tools + standalone CLI
 ├── configuration.md          # config reference
 ├── plan-allotments.md        # ChatGPT plan -> allotment multiplier map
 ├── troubleshooting.md        # operational debugging

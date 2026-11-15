@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+const jitterFactors = vi.hoisted(() => [] as number[]);
+const selectInitialAccount = vi.hoisted(() => ({ value: false }));
+const jitterNotification = vi.hoisted(() => ({ notify: undefined as ((delayMs: number) => void) | undefined }));
+
+vi.mock("../lib/rotation.js", () => ({
+	addJitter: (baseMs: number, jitterFactor: number) => {
+		jitterFactors.push(jitterFactor);
+		jitterNotification.notify?.(baseMs);
+		return baseMs;
+	},
+}));
+
 vi.mock("@opencode-ai/plugin/tool", () => {
 	const makeSchema = () => ({
 		optional: () => makeSchema(),
@@ -33,6 +45,16 @@ vi.mock("../lib/request/fetch-helpers.js", () => ({
 			const code = error?.code;
 			const type = error?.type;
 			const contextType = error?.context?.type;
+			if (response.status === 429) {
+				return {
+					response,
+					errorBody: body,
+					rateLimit: {
+						retryAfterMs: error?.retry_after_ms ?? 1000,
+						code,
+					},
+				};
+			}
 			if (
 				code === "server_is_overloaded" ||
 				type === "service_unavailable_error" ||
@@ -93,7 +115,8 @@ vi.mock("../lib/accounts.js", () => {
 		}
 
 		getCurrentOrNextForFamily() {
-			const account = this.accounts[Math.min(this.calls, this.accounts.length - 1)];
+			const offset = selectInitialAccount.value ? 1 : 0;
+			const account = this.accounts[Math.min(this.calls + offset, this.accounts.length - 1)];
 			this.calls += 1;
 			return account;
 		}
@@ -109,6 +132,8 @@ vi.mock("../lib/accounts.js", () => {
 		getSelectionExplainability() {
 			return [];
 		}
+
+		setManualAccountOverride() {}
 
 		recordSuccess() {}
 
@@ -228,6 +253,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		"CODEX_AUTH_RETRY_ALL_MAX_RETRIES",
 		"CODEX_AUTH_TOKEN_REFRESH_SKEW_MS",
 		"CODEX_AUTH_RATE_LIMIT_TOAST_DEBOUNCE_MS",
+		"CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR",
 		"CODEX_AUTH_PREWARM",
 	] as const;
 
@@ -252,6 +278,9 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		process.env.CODEX_AUTH_QUOTA_NOTIFICATIONS = "0";
 
 		vi.useFakeTimers();
+		jitterFactors.length = 0;
+		jitterNotification.notify = undefined;
+		selectInitialAccount.value = false;
 		originalFetch = globalThis.fetch;
 		globalThis.fetch = vi.fn(async () => new Response("ok", { status: 200 })) as any;
 	});
@@ -276,6 +305,7 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 	});
 
 	it("waits and retries when all accounts are rate-limited", async () => {
+		process.env.CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR = "0.65";
 		const { OpenAIAuthPlugin } = (await import("../index.js")) as any;
 		const client = {
 			tui: { showToast: vi.fn() },
@@ -302,6 +332,90 @@ describe("OpenAIAuthPlugin rate-limit retry", () => {
 		const response = await fetchPromise;
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
 		expect(response.status).toBe(200);
+		expect(jitterFactors).toEqual([0.65]);
+	});
+
+	it("uses configured jitter for short per-account rate-limit retries", async () => {
+		vi.spyOn(Math, "random").mockReturnValue(1);
+		process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED = "0";
+		process.env.CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR = "0.65";
+		selectInitialAccount.value = true;
+		const { OpenAIAuthPlugin } = (await import("../index.js")) as any;
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client } as any);
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+		const sdk = (await (plugin.auth as any).loader(getAuth, { options: {}, models: {} } as any)) as any;
+		const fetchMock = vi.mocked(globalThis.fetch);
+		fetchMock.mockReset();
+		fetchMock
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({ error: { code: "rate_limit_exceeded", retry_after_ms: 1000 } }),
+					{ status: 429, headers: { "content-type": "application/json" } },
+				),
+			)
+			.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+		const retryScheduled = new Promise<number>((resolve) => { jitterNotification.notify = resolve; });
+		const fetchPromise = sdk.fetch("https://example.com", {});
+		// Body parsing must finish before advancing; upstream backoff jitter can
+		// also make the scheduled delay longer than the server's 1000ms floor.
+		const retryDelayMs = await retryScheduled;
+		await vi.advanceTimersByTimeAsync(retryDelayMs);
+
+		const response = await fetchPromise;
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(response.status).toBe(200);
+		expect(jitterFactors).toEqual([0.65]);
+	});
+
+	it("keeps empty-response jitter independent from rate-limit jitter", async () => {
+		process.env.CODEX_AUTH_RETRY_ALL_RATE_LIMITED = "0";
+		process.env.CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR = "0.65";
+		selectInitialAccount.value = true;
+		const { OpenAIAuthPlugin } = (await import("../index.js")) as any;
+		const client = {
+			tui: { showToast: vi.fn() },
+			auth: { set: vi.fn() },
+		} as any;
+
+		const plugin = await OpenAIAuthPlugin({ client } as any);
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "a",
+			refresh: "r",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+		const sdk = (await (plugin.auth as any).loader(getAuth, { options: {}, models: {} } as any)) as any;
+		const fetchMock = vi.mocked(globalThis.fetch);
+		fetchMock.mockReset();
+		fetchMock
+			.mockResolvedValueOnce(new Response(JSON.stringify({ id: "empty-response" }), { status: 200 }))
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({ id: "complete-response", output: [{ type: "message" }] }),
+					{ status: 200 },
+				),
+			);
+
+		const fetchPromise = sdk.fetch("https://example.com", {});
+		await vi.advanceTimersByTimeAsync(1000);
+
+		const response = await fetchPromise;
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(response.status).toBe(200);
+		expect(jitterFactors).toEqual([0.2]);
 	});
 
 	it("rejects with a named AbortError when the caller aborts mid retry-wait (#176)", async () => {

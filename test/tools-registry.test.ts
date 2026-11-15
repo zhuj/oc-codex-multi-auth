@@ -13,6 +13,7 @@ import { createToolRegistry, type ToolContext } from "../lib/tools/index.js";
 const EXPECTED_TOOL_NAMES = [
 	"codex-list",
 	"codex-switch",
+	"codex-account-enabled",
 	"codex-warm",
 	"codex-status",
 	"codex-limits",
@@ -50,7 +51,7 @@ describe("createToolRegistry", () => {
 		expect(Object.keys(registry).sort()).toEqual(
 			[...EXPECTED_TOOL_NAMES].sort(),
 		);
-		expect(Object.keys(registry)).toHaveLength(25);
+		expect(Object.keys(registry)).toHaveLength(26);
 	});
 
 	it("returns a well-formed ToolDefinition for every registered tool", () => {

@@ -96,7 +96,7 @@ Invariants:
 
 ## Tool Registry
 
-`index.ts` builds one `ToolContext` from plugin-closure state (mutable refs for the account-manager cache plus read-only helper functions) and passes it to `createToolRegistry(ctx)` in `lib/tools/index.ts`, which registers 25 OpenCode tools — `codex-list`, `codex-switch`, `codex-warm`, and the rest. By convention every registered `codex-*` tool is its own file under `lib/tools/` and exports a `createCodex<Name>Tool(ctx)` factory.
+`index.ts` builds one `ToolContext` from plugin-closure state (mutable refs for the account-manager cache plus read-only helper functions) and passes it to `createToolRegistry(ctx)` in `lib/tools/index.ts`, which registers 26 OpenCode tools — `codex-list`, `codex-switch`, `codex-account-enabled`, `codex-warm`, and the rest. By convention every registered `codex-*` tool is its own file under `lib/tools/` and exports a `createCodex<Name>Tool(ctx)` factory.
 
 Shared argument metadata lives in `lib/tools/args.ts` (`TOOL_OUTPUT_FORMAT_VALUES`, descriptions): the `format` field is `tool.schema.enum(...)` per tool — schema calls stay inline because a shared schema factory's inferred zod type cannot cross the module boundary (TS2742). `lib/tools/doctor-repair.ts` (refresh + stale-state clear) and `lib/tools/refresh-account.ts` (single-use refresh persistence) are shared helpers, not registered tools.
 

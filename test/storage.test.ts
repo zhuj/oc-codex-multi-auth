@@ -31,6 +31,8 @@ import { AccountManager, formatWaitTime } from "../lib/accounts.js";
 import { resetTrackers } from "../lib/rotation.js";
 import { MAX_QUOTA_RESET_HORIZON_MS } from "../lib/quota-windows.js";
 import type { ModelFamily } from "../lib/prompts/codex.js";
+import { AUTH_FAILURE_DISABLE_NOTE_MARKER, isPersistedUserDisabled } from "../lib/accounts/state.js";
+import { WORKSPACE_DEACTIVATED_NOTE_MARKER } from "../lib/accounts/disabled.js";
 
 describe("storage", () => {
   describe("getWorkspaceIdentityKey", () => {
@@ -78,6 +80,181 @@ describe("storage", () => {
   });
 
   describe("deduplication", () => {
+    describe.each([
+      { cause: "enabled duplicates", marker: undefined },
+      { cause: "authentication failure", marker: AUTH_FAILURE_DISABLE_NOTE_MARKER },
+      { cause: "workspace deactivation", marker: WORKSPACE_DEACTIVATED_NOTE_MARKER },
+    ])("operator-note property presence: $cause", ({ marker }) => {
+      describe.each([false, true])("input order reversed=%s", (reversed) => {
+        it.each([
+          { mode: "omission", noteUpdate: {}, expectedNote: "Keep this operator reminder." },
+          { mode: "replacement", noteUpdate: { accountNote: "Updated operator reminder." }, expectedNote: "Updated operator reminder." },
+          { mode: "empty-string clear", noteUpdate: { accountNote: "" }, expectedNote: "" },
+          { mode: "explicit undefined clear", noteUpdate: { accountNote: undefined }, expectedNote: undefined },
+        ])("preserves spread semantics for $mode without losing automatic attribution", ({ noteUpdate, expectedNote }) => {
+          const older = {
+            accountId: "fake-note-workspace", refreshToken: "fake-note-refresh",
+            enabled: marker === undefined, userDisabled: false, addedAt: 1, lastUsed: 1,
+            accountNote: marker ? `Keep this operator reminder. ${marker}` : "Keep this operator reminder.",
+          };
+          const newer = {
+            accountId: "fake-note-workspace", refreshToken: "fake-note-refresh",
+            enabled: true, userDisabled: false, addedAt: 2, lastUsed: 2, ...noteUpdate,
+          };
+
+          const normalized = normalizeAccountStorage({
+            version: 3, activeIndex: 0, accounts: reversed ? [newer, older] : [older, newer],
+          });
+
+          expect(normalized?.accounts).toHaveLength(1);
+          expect(normalized?.accounts[0]).toMatchObject({
+            enabled: marker === undefined, userDisabled: false,
+          });
+          expect(normalized?.accounts[0]?.accountNote)
+            .toBe(marker ? (expectedNote ? `${expectedNote} ${marker}` : marker) : expectedNote);
+        });
+      });
+    });
+
+    describe.each([
+      { cause: "authentication failure", marker: AUTH_FAILURE_DISABLE_NOTE_MARKER },
+      { cause: "workspace deactivation", marker: WORKSPACE_DEACTIVATED_NOTE_MARKER },
+    ])("retained automatic-disable provenance: $cause", ({ marker }) => {
+      it.each([false, true])("retains attribution beside the newest operator note (reversed=%s)", (reversed) => {
+        const older = {
+          accountId: "fake-workspace", refreshToken: "fake-refresh", enabled: false,
+          userDisabled: false, accountNote: marker, addedAt: 1, lastUsed: 1,
+        };
+        const newer = {
+          ...older, enabled: true, accountNote: "Operator reminder.", addedAt: 2, lastUsed: 2,
+        };
+
+        const accounts = deduplicateAccounts(reversed ? [newer, older] : [older, newer]);
+
+        expect(accounts).toHaveLength(1);
+        expect(accounts[0]).toMatchObject({ enabled: false, userDisabled: false });
+        expect(accounts[0]?.accountNote).toBe(`Operator reminder. ${marker}`);
+        expect(isPersistedUserDisabled(accounts[0] ?? {})).toBe(false);
+      });
+
+      it.each([false, true])("does not attribute a token duplicate's disable to an enabled org (reversed=%s)", (reversed) => {
+        const org = {
+          accountId: "fake-org", organizationId: "fake-org", accountIdSource: "org" as const,
+          refreshToken: "fake-refresh", enabled: true, userDisabled: false,
+          accountNote: "Org reminder.", addedAt: 1, lastUsed: 1,
+        };
+        const token = {
+          accountId: "fake-token-account", accountIdSource: "token" as const,
+          refreshToken: "fake-refresh", enabled: false, userDisabled: false,
+          accountNote: `Operator reminder. ${marker}`, addedAt: 2, lastUsed: 2,
+        };
+
+        const normalized = normalizeAccountStorage({
+          version: 3, activeIndex: 0, accounts: reversed ? [token, org] : [org, token],
+        });
+
+        expect(normalized?.accounts).toHaveLength(1);
+        expect(normalized?.accounts[0]).toMatchObject({
+          organizationId: "fake-org", enabled: true, userDisabled: false,
+          accountNote: "Operator reminder.",
+        });
+      });
+
+      it.each([false, true])("retains an org's own automatic disable across token dedup (reversed=%s)", (reversed) => {
+        const org = {
+          accountId: "fake-org", organizationId: "fake-org", accountIdSource: "org" as const,
+          refreshToken: "fake-old-refresh", email: "fake@example.com", enabled: false,
+          userDisabled: false, accountNote: marker, addedAt: 1, lastUsed: 1,
+        };
+        const token = {
+          accountId: "fake-token-account", accountIdSource: "token" as const,
+          refreshToken: "fake-new-refresh", email: "FAKE@example.com", enabled: true,
+          userDisabled: false, accountNote: "Operator reminder.", addedAt: 2, lastUsed: 2,
+        };
+
+        const normalized = normalizeAccountStorage({
+          version: 3, activeIndex: 0, accounts: reversed ? [token, org] : [org, token],
+        });
+
+        expect(normalized?.accounts).toHaveLength(1);
+        expect(normalized?.accounts[0]).toMatchObject({
+          organizationId: "fake-org", enabled: false, userDisabled: false,
+          accountNote: `Operator reminder. ${marker}`,
+        });
+      });
+
+      it.each([false, true])("keeps org user intent independent of a token duplicate's automatic disable (reversed=%s)", (reversed) => {
+        const org = {
+          accountId: "fake-org", organizationId: "fake-org", accountIdSource: "org" as const,
+          refreshToken: "fake-refresh", enabled: false, userDisabled: true,
+          accountNote: "Org reminder.", addedAt: 1, lastUsed: 1,
+        };
+        const token = {
+          accountId: "fake-token-account", accountIdSource: "token" as const,
+          refreshToken: "fake-refresh", enabled: false, userDisabled: false,
+          accountNote: `Operator reminder. ${marker}`, addedAt: 2, lastUsed: 2,
+        };
+
+        const normalized = normalizeAccountStorage({
+          version: 3, activeIndex: 0, accounts: reversed ? [token, org] : [org, token],
+        });
+
+        expect(normalized?.accounts).toHaveLength(1);
+        expect(normalized?.accounts[0]).toMatchObject({
+          organizationId: "fake-org", enabled: false, userDisabled: true,
+          accountNote: "Operator reminder.",
+        });
+      });
+
+      it.each([false, true])("leaves a distinct org workspace enabled despite a shared token (reversed=%s)", (reversed) => {
+        const disabled = {
+          accountId: "fake-workspace-a", organizationId: "fake-org-a", accountIdSource: "org" as const,
+          refreshToken: "fake-shared-refresh", enabled: false, userDisabled: false,
+          accountNote: marker, addedAt: 1, lastUsed: 1,
+        };
+        const healthy = {
+          ...disabled, accountId: "fake-workspace-b", organizationId: "fake-org-b",
+          enabled: true, accountNote: "Healthy workspace reminder.", addedAt: 2, lastUsed: 2,
+        };
+
+        const normalized = normalizeAccountStorage({
+          version: 3, activeIndex: 0, accounts: reversed ? [healthy, disabled] : [disabled, healthy],
+        });
+
+        expect(normalized?.accounts).toHaveLength(2);
+        expect(normalized?.accounts.find((account) => account.organizationId === "fake-org-b"))
+          .toMatchObject({ enabled: true, userDisabled: false, accountNote: "Healthy workspace reminder." });
+      });
+
+      it.each([false, true])("does not revive cleared attribution from an enabled duplicate (reversed=%s)", (reversed) => {
+        const older = {
+          accountId: "fake-workspace", refreshToken: "fake-refresh", enabled: true,
+          userDisabled: false, accountNote: marker, addedAt: 1, lastUsed: 1,
+        };
+        const newer = {
+          ...older, accountNote: "Recovered operator reminder.", addedAt: 2, lastUsed: 2,
+        };
+
+        const accounts = deduplicateAccounts(reversed ? [newer, older] : [older, newer]);
+
+        expect(accounts[0]).toMatchObject({
+          enabled: true, userDisabled: false, accountNote: "Recovered operator reminder.",
+        });
+      });
+    });
+
+    it("does not turn an automatic disable into user intent during deduplication", () => {
+      const accounts = deduplicateAccounts([
+        { accountId: "auto-disabled", refreshToken: "fake-refresh", enabled: false,
+          accountNote: AUTH_FAILURE_DISABLE_NOTE_MARKER, lastUsed: 2 },
+        { accountId: "auto-disabled", refreshToken: "fake-refresh", enabled: false,
+          accountNote: AUTH_FAILURE_DISABLE_NOTE_MARKER, lastUsed: 1 },
+      ]);
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]?.enabled).toBe(false);
+      expect(isPersistedUserDisabled(accounts[0]!)).toBe(false);
+    });
+
     it("preserves separate members of the same Business workspace", () => {
       const accounts = deduplicateAccounts([
         {
@@ -493,6 +670,7 @@ describe("storage", () => {
             addedAt: 999,
             lastUsed: 999,
             enabled: false,
+            userDisabled: true,
           },
         ],
       });
@@ -501,6 +679,7 @@ describe("storage", () => {
       expect(loaded?.accounts).toHaveLength(1);
       expect(loaded!.accounts[0]!.organizationId).toBe("org-AAA");
       expect(loaded!.accounts[0]!.enabled).not.toBe(false);
+      expect(loaded!.accounts[0]!.userDisabled).not.toBe(true);
     });
 
     it("keeps the org account enabled when a disabled token-source duplicate merges in (#171)", async () => {
@@ -546,7 +725,7 @@ describe("storage", () => {
         version: 3,
         activeIndex: 0,
         accounts: [
-          { accountId: "org-X", organizationId: "org-X", accountIdSource: "org", email: "u@e.com", refreshToken: "RT", addedAt: 100, lastUsed: 100, enabled: false },
+          { accountId: "org-X", organizationId: "org-X", accountIdSource: "org", email: "u@e.com", refreshToken: "RT", addedAt: 100, lastUsed: 100, enabled: false, userDisabled: true },
           { accountId: "org-X", organizationId: "org-X", accountIdSource: "org", email: "u@e.com", refreshToken: "RT", addedAt: 200, lastUsed: 200, enabled: true },
         ],
       });
@@ -554,6 +733,7 @@ describe("storage", () => {
       expect(loaded?.accounts).toHaveLength(1);
       // User intent wins: a genuinely disabled real account stays disabled.
       expect(loaded!.accounts[0]!.enabled).toBe(false);
+      expect(loaded!.accounts[0]!.userDisabled).toBe(true);
     });
 
     it("keeps two distinct real org accounts both enabled (no merge regression)", async () => {

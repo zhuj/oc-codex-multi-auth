@@ -7,6 +7,7 @@ import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { getStoragePath, loadAccounts } from "../storage.js";
 import { formatCooldown } from "../accounts.js";
 import { resolveSeatSuffixes } from "../account-display.js";
+import { isPersistedUserDisabled } from "../accounts/state.js";
 import { buildTableHeader, buildTableRow, type TableOptions } from "../table-formatter.js";
 import {
 	formatUiBadge,
@@ -186,7 +187,8 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 						const cooldown = formatCooldown(account, now);
 						const statuses: string[] = [];
 						if (index === activeIndex) statuses.push("active");
-						if (account.enabled === false) statuses.push("disabled");
+						if (isPersistedUserDisabled(account)) statuses.push("user-disabled");
+						else if (account.enabled === false) statuses.push("temporarily-disabled");
 						if (rateLimit) statuses.push("rate-limited");
 						if (quotaExhausted) statuses.push("quota-exhausted");
 						if (cooldown) statuses.push("cooldown");
@@ -198,6 +200,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 								peerAccounts: storage.accounts,
 							}),
 							enabled: account.enabled !== false,
+							userDisabled: isPersistedUserDisabled(account),
 							isActive: index === activeIndex,
 							planType: account.planType ?? null,
 							plan: formatPlanType(account.planType) ?? null,
@@ -234,8 +237,10 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 					const badges: string[] = [];
 					if (index === activeIndex)
 						badges.push(formatUiBadge(ui, "current", "accent"));
-					if (account.enabled === false)
-						badges.push(formatUiBadge(ui, "disabled", "danger"));
+					if (isPersistedUserDisabled(account))
+						badges.push(formatUiBadge(ui, "user-disabled", "danger"));
+					else if (account.enabled === false)
+						badges.push(formatUiBadge(ui, "temporarily-disabled", "warning"));
 					const rateLimit = formatRateLimitEntry(account, now);
 					const quotaExhausted = formatQuotaExhaustionEntry(account, now);
 					if (rateLimit)
@@ -280,6 +285,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 					formatUiItem(ui, "Add account: opencode auth login", "accent"),
 				);
 				lines.push(formatUiItem(ui, "Switch account: codex-switch index=2"));
+				lines.push(formatUiItem(ui, "Disable account: codex-account-enabled index=2 enabled=false"));
 				lines.push(formatUiItem(ui, "Detailed status: codex-status"));
 				lines.push(formatUiItem(ui, "Live dashboard: codex-dashboard"));
 				lines.push(formatUiItem(ui, "Runtime metrics: codex-metrics"));
@@ -357,6 +363,8 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 				const rateLimit = formatRateLimitEntry(account, now);
 				const quotaExhausted = formatQuotaExhaustionEntry(account, now);
 				if (index === activeIndex) statuses.push("active");
+				if (isPersistedUserDisabled(account)) statuses.push("user-disabled");
+				else if (account.enabled === false) statuses.push("temporarily-disabled");
 				if (rateLimit) statuses.push("rate-limited");
 				if (quotaExhausted) statuses.push("quota-exhausted");
 				if (
@@ -390,6 +398,7 @@ export function createCodexListTool(ctx: ToolContext): ToolDefinition {
 			lines.push("Commands:");
 			lines.push("  - Add account: opencode auth login");
 			lines.push("  - Switch account: codex-switch");
+			lines.push("  - Enable/disable account: codex-account-enabled");
 			lines.push("  - Status details: codex-status");
 			lines.push("  - Live dashboard: codex-dashboard");
 			lines.push("  - Runtime metrics: codex-metrics");

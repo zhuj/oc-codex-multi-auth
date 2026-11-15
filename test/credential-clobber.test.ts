@@ -19,9 +19,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AccountStorageV3 } from "../lib/storage.js";
 
-const { saveAccountsMock, diskStateRef } = vi.hoisted(() => ({
+const { saveAccountsMock, diskStateRef, transactionGateRef } = vi.hoisted(() => ({
 	saveAccountsMock: vi.fn(async (_storage: unknown) => {}),
 	diskStateRef: { current: null as unknown },
+	transactionGateRef: { current: null as Promise<void> | null },
 }));
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
@@ -35,7 +36,15 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
 					current: unknown,
 					persist: (storage: unknown) => Promise<void>,
 				) => Promise<unknown>,
-			) => handler(diskStateRef.current, saveAccountsMock),
+			) => {
+				const gate = transactionGateRef.current;
+				transactionGateRef.current = null;
+				if (gate) await gate;
+				return handler(diskStateRef.current, async (storage) => {
+					await saveAccountsMock(storage);
+					diskStateRef.current = storage;
+				});
+			},
 		),
 	};
 });
@@ -85,6 +94,7 @@ function makeState(
 beforeEach(() => {
 	saveAccountsMock.mockClear();
 	diskStateRef.current = null;
+	transactionGateRef.current = null;
 });
 
 function persistedStorage(): AccountStorageV3 | undefined {
@@ -291,6 +301,10 @@ describe("AccountPersistence account membership", () => {
 		]);
 	});
 });
+function lastPersistedStorage(): AccountStorageV3 | undefined {
+	const calls = saveAccountsMock.mock.calls;
+	return calls[calls.length - 1]?.[0] as AccountStorageV3 | undefined;
+}
 
 // Issue #218: a weekly quota block is worth days, so unlike a 5h window it
 // cannot be left to last-writer-wins. A second process holding a stale snapshot
@@ -612,6 +626,133 @@ describe("AccountPersistence rate-limit merge (multi-process clobber guard)", ()
 	});
 });
 
+describe("AccountPersistence user preference merge (multi-process clobber guard)", () => {
+	it("keeps an auth-failure disable temporary across save and reload", async () => {
+		const state = makeState([makeStoredAccount()]);
+		const persistence = new AccountPersistence(state);
+		const account = state.accounts[0];
+		if (!account) throw new Error("Missing fixture account");
+		account.enabled = false;
+		persistence.markAccountDisabled(account);
+		diskStateRef.current = { version: 3, accounts: [makeStoredAccount()], activeIndex: 0 } satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		const saved = persistedStorage();
+		expect(saved?.accounts[0]).toMatchObject({ enabled: false, userDisabled: false });
+		expect(makeState(saved?.accounts ?? []).accounts[0]).toMatchObject({ enabled: false, userDisabled: false });
+	});
+
+	it("persists a local disable despite an enabled disk record", async () => {
+		const state = makeState([makeStoredAccount()]);
+		state.setAccountEnabled(0, false);
+		diskStateRef.current = { version: 3, accounts: [makeStoredAccount({ enabled: true })], activeIndex: 0 } satisfies AccountStorageV3;
+
+		await new AccountPersistence(state).saveToDisk();
+
+		expect(persistedStorage()?.accounts[0]).toMatchObject({ enabled: false, userDisabled: true });
+	});
+
+	it("does not let a stale manager undo a user disable written on disk", async () => {
+		const state = makeState([makeStoredAccount()]);
+		const persistence = new AccountPersistence(state);
+		diskStateRef.current = {
+			version: 3,
+			accounts: [makeStoredAccount({ enabled: false, userDisabled: true })],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		expect(persistedStorage()?.accounts[0]).toMatchObject({
+			enabled: false,
+			userDisabled: true,
+		});
+		expect(state.accounts[0]).toMatchObject({
+			enabled: false,
+			userDisabled: true,
+		});
+	});
+
+	it("does not let a stale manager undo a user enable written on disk", async () => {
+		const state = makeState([
+			makeStoredAccount({ enabled: false, userDisabled: true }),
+		]);
+		const persistence = new AccountPersistence(state);
+		diskStateRef.current = {
+			version: 3,
+			accounts: [makeStoredAccount()],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		expect(persistedStorage()?.accounts[0]?.enabled).toBeUndefined();
+		expect(persistedStorage()?.accounts[0]?.userDisabled).toBeUndefined();
+		expect(state.accounts[0]).toMatchObject({
+			enabled: true,
+			userDisabled: false,
+		});
+	});
+
+	it("persists a local explicit enable while disk matches the loaded baseline", async () => {
+		const disabled = makeStoredAccount({ enabled: false, userDisabled: true });
+		const state = makeState([disabled]);
+		const persistence = new AccountPersistence(state);
+		state.setAccountEnabled(0, true);
+		diskStateRef.current = {
+			version: 3,
+			accounts: [disabled],
+			activeIndex: 0,
+		} satisfies AccountStorageV3;
+
+		await persistence.saveToDisk();
+
+		expect(persistedStorage()?.accounts[0]?.enabled).toBeUndefined();
+		expect(persistedStorage()?.accounts[0]?.userDisabled).toBeUndefined();
+	});
+
+	it("does not let an older overlapping save undo a later user disable", async () => {
+		const state = makeState([makeStoredAccount()]);
+		const persistence = new AccountPersistence(state);
+		let releaseFirstSave: (() => void) | undefined;
+		transactionGateRef.current = new Promise<void>((resolve) => {
+			releaseFirstSave = resolve;
+		});
+
+		const olderSave = persistence.saveToDisk();
+		state.setAccountEnabled(0, false);
+		await persistence.saveToDisk();
+		releaseFirstSave?.();
+		await olderSave;
+
+		expect(lastPersistedStorage()?.accounts[0]).toMatchObject({
+			enabled: false,
+			userDisabled: true,
+		});
+	});
+
+	it("does not let an older overlapping save undo a later user enable", async () => {
+		const state = makeState([
+			makeStoredAccount({ enabled: false, userDisabled: true }),
+		]);
+		const persistence = new AccountPersistence(state);
+		let releaseFirstSave: (() => void) | undefined;
+		transactionGateRef.current = new Promise<void>((resolve) => {
+			releaseFirstSave = resolve;
+		});
+
+		const olderSave = persistence.saveToDisk();
+		state.setAccountEnabled(0, true);
+		await persistence.saveToDisk();
+		releaseFirstSave?.();
+		await olderSave;
+
+		expect(lastPersistedStorage()?.accounts[0]?.enabled).toBeUndefined();
+		expect(lastPersistedStorage()?.accounts[0]?.userDisabled).toBeUndefined();
+	});
+});
+
 describe("AccountPersistence credential merge (multi-process clobber guard)", () => {
 	it("adopts a newer rotated refresh token from disk instead of clobbering it", async () => {
 		const state = makeState([
@@ -757,6 +898,7 @@ describe("shouldRefreshProactively ordering", () => {
 		const account = {
 			index: 0,
 			refreshToken: "rt",
+			userDisabled: false,
 			addedAt: 0,
 			lastUsed: 0,
 			rateLimitResetTimes: {},
