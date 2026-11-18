@@ -89,6 +89,8 @@ export interface ManagedAccount {
 export interface AccountSelectionExplainability {
 	index: number;
 	enabled: boolean;
+	/** Process-local permission to route a user-disabled account; never persisted. */
+	manualOverride?: boolean;
 	isCurrentForFamily: boolean;
 	eligible: boolean;
 	reasons: string[];

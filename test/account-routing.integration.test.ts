@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AccountManager } from "../lib/accounts.js";
+import { clearCircuitBreakers } from "../lib/circuit-breaker.js";
+import { getTokenTracker, resetTrackers } from "../lib/rotation.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
+import type { PluginConfig } from "../lib/types.js";
 
-const { storageRef, transactionGateRef, transactionStartedRef, persistObserverRef, rotationStrategyRef } = vi.hoisted(() => ({
+const { storageRef, transactionGateRef, transactionStartedRef, persistObserverRef, rotationStrategyRef, pluginConfigRef } = vi.hoisted(() => ({
 	rotationStrategyRef: { current: "hybrid" as "hybrid" | "custom" },
+	pluginConfigRef: { current: {} as PluginConfig },
 	storageRef: { current: null as AccountStorageV3 | null },
 	transactionGateRef: { current: null as Promise<void> | null },
 	transactionStartedRef: { current: null as (() => void) | null },
@@ -63,7 +67,7 @@ vi.mock("../lib/config.js", async (importOriginal) => {
 		getRetryAllAccountsMaxWaitMs: () => 0,
 		getRotationStrategy: () => rotationStrategyRef.current,
 		getSessionRecovery: () => false,
-		loadPluginConfig: () => ({}),
+		loadPluginConfig: () => pluginConfigRef.current,
 	};
 });
 
@@ -121,6 +125,7 @@ vi.mock("../lib/tui-quota-cache.js", async (importOriginal) => {
 });
 
 type PluginRuntime = {
+	dispose: () => Promise<void>;
 	auth: {
 		loader: (
 			getAuth: () => Promise<unknown>,
@@ -135,6 +140,8 @@ type PluginRuntime = {
 		};
 	};
 };
+
+const runtimes: PluginRuntime[] = [];
 
 const getAuth = async () => ({
 	type: "oauth" as const,
@@ -155,12 +162,13 @@ async function createRuntime(): Promise<{
 		session: { prompt: vi.fn() },
 	};
 	const plugin = (await OpenAIOAuthPlugin({ client } as never)) as unknown as PluginRuntime;
+	runtimes.push(plugin);
 	const sdk = await plugin.auth.loader(getAuth, { options: {}, models: {} });
 	if (!sdk.fetch) throw new Error("Expected plugin fetch implementation");
 	return { plugin, request: sdk.fetch };
 }
 
-async function createRuntimeWithManager(): Promise<{
+async function createRuntimeWithManager(manualIndex?: number): Promise<{
 	plugin: PluginRuntime;
 	request: NonNullable<Awaited<ReturnType<PluginRuntime["auth"]["loader"]>>["fetch"]>;
 	manager: AccountManager;
@@ -168,8 +176,11 @@ async function createRuntimeWithManager(): Promise<{
 	const { AccountManager } = await import("../lib/accounts.js");
 	const loadSpy = vi.spyOn(AccountManager, "loadFromDisk");
 	const runtime = await createRuntime();
-	const manager = await loadSpy.mock.results[0]?.value;
-	if (!manager) throw new Error("Expected initial account manager");
+	if (manualIndex !== undefined) {
+		await runtime.plugin.tool["codex-switch"].execute({ index: manualIndex });
+	}
+	const manager = await loadSpy.mock.results.at(-1)?.value;
+	if (!manager) throw new Error("Expected current account manager");
 	return { ...runtime, manager };
 }
 
@@ -197,11 +208,35 @@ function selectedTokens(fetchMock: ReturnType<typeof vi.fn>): Array<string | nul
 	);
 }
 
+type AvailabilityBlock = "auth cooldown" | "local throttle" | "upstream rate limit" | "upstream quota";
+
+function blockAccount(
+	manager: AccountManager,
+	block: AvailabilityBlock,
+	index = 0,
+	durationMs = 60_000,
+): void {
+	const account = manager.getAccountAt(index);
+	if (!account) throw new Error("Expected account to block");
+	if (block === "auth cooldown") {
+		manager.markAccountCoolingDown(account, durationMs, "auth-failure");
+	} else if (block === "local throttle") {
+		getTokenTracker().drain(index, "gpt-5.1:gpt-5.1", 100);
+	} else if (block === "upstream rate limit") {
+		manager.markRateLimited(account, durationMs, "gpt-5.1", "gpt-5.1");
+	} else {
+		manager.markQuotaExhausted(account, Date.now() + durationMs, "gpt-5.1", "gpt-5.1");
+	}
+}
+
 describe("plugin account routing with the real AccountManager", () => {
 	const originalFetch = globalThis.fetch;
 
 	beforeEach(() => {
+		resetTrackers();
+		clearCircuitBreakers();
 		rotationStrategyRef.current = "hybrid";
+		pluginConfigRef.current = {};
 		transactionGateRef.current = null;
 		transactionStartedRef.current = null;
 		persistObserverRef.current = null;
@@ -234,9 +269,133 @@ describe("plugin account routing with the real AccountManager", () => {
 		};
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		for (const runtime of runtimes.splice(0)) await runtime.dispose();
 		globalThis.fetch = originalFetch;
+		vi.useRealTimers();
+		vi.unstubAllEnvs();
 		vi.restoreAllMocks();
+	});
+
+	describe("manual override availability", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+			vi.stubEnv("CODEX_AUTH_RETRY_ALL_RATE_LIMITED", "0");
+			vi.stubEnv("CODEX_AUTH_RATE_LIMIT_JITTER_FACTOR", "0");
+			vi.stubEnv("CODEX_AUTH_AUTO_PROTECT_CREDITS", "0");
+			vi.stubEnv("CODEX_AUTH_QUOTA_NOTIFICATIONS", "0");
+			vi.stubEnv("CODEX_AUTH_PREWARM", "0");
+		});
+
+		describe.each(["general", "strict"] as const)("%s pool", (poolMode) => {
+			it.each([
+				["auth cooldown", 503, "accounts_temporarily_unavailable"],
+				["local throttle", 503, "accounts_temporarily_unavailable"],
+				["upstream rate limit", 429, "all_accounts_rate_limited"],
+				["upstream quota", 429, "all_accounts_rate_limited"],
+			] as const)("classifies a manually selected account's %s without re-enabling it", async (block, status, code) => {
+				storageRef.current!.accounts.splice(1);
+				if (poolMode === "strict") {
+					pluginConfigRef.current = {
+						modelAccountPools: { "gpt-5.1": ["A"] },
+						modelAccountPoolModes: { "gpt-5.1": "strict" },
+					};
+				}
+				const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+				globalThis.fetch = fetchMock;
+				const runtime = await createRuntimeWithManager(1);
+				blockAccount(runtime.manager, block);
+
+				const response = await runtime.request("https://api.openai.com/v1/responses", { method: "POST" });
+
+				expect(response.status).toBe(status);
+				expect(await response.json()).toMatchObject({
+					error: { code: poolMode === "strict" ? "strict_pool_unavailable" : code },
+				});
+				expect(fetchMock).not.toHaveBeenCalled();
+				expect(runtime.manager.getAccountAt(0)).toMatchObject({ enabled: false, userDisabled: true });
+				expect(storageRef.current?.accounts[0]).toMatchObject({ enabled: false, userDisabled: true });
+			});
+		});
+
+		it("counts a local block on the override when another account is upstream-limited", async () => {
+			const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+			globalThis.fetch = fetchMock;
+			const runtime = await createRuntimeWithManager(1);
+			blockAccount(runtime.manager, "auth cooldown");
+			blockAccount(runtime.manager, "upstream rate limit", 1);
+
+			const response = await runtime.request("https://api.openai.com/v1/responses", { method: "POST" });
+
+			expect(response.status).toBe(503);
+			expect(await response.json()).toMatchObject({ error: { code: "accounts_temporarily_unavailable" } });
+			expect(fetchMock).not.toHaveBeenCalled();
+		});
+
+		it("excludes an available manual override outside a strict pool from its wait and classification", async () => {
+			pluginConfigRef.current = {
+				modelAccountPools: { "gpt-5.1": ["B"] },
+				modelAccountPoolModes: { "gpt-5.1": "strict" },
+			};
+			const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+			globalThis.fetch = fetchMock;
+			const runtime = await createRuntimeWithManager(1);
+			blockAccount(runtime.manager, "upstream rate limit", 1);
+
+			const response = await runtime.request("https://api.openai.com/v1/responses", { method: "POST" });
+
+			expect(response.status).toBe(429);
+			expect(await response.json()).toMatchObject({ error: { code: "strict_pool_unavailable" } });
+			expect(fetchMock).not.toHaveBeenCalled();
+		});
+
+		it.each(["auth cooldown", "local throttle", "upstream rate limit"] as const)(
+			"waits for an overridden account's %s and serves it without changing its routing preference",
+			async (block) => {
+				storageRef.current!.accounts.splice(1);
+				vi.stubEnv("CODEX_AUTH_RETRY_ALL_RATE_LIMITED", "1");
+				vi.stubEnv("CODEX_AUTH_RETRY_ALL_MAX_RETRIES", "1");
+				const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+				globalThis.fetch = fetchMock;
+				const runtime = await createRuntimeWithManager(1);
+				blockAccount(runtime.manager, block, 0, 1000);
+				const waitMs = block === "local throttle" ? 10_000 : 1000;
+				expect(runtime.manager.getMinWaitTimeForFamily("gpt-5.1", "gpt-5.1")).toBe(waitMs);
+
+				const pending = runtime.request("https://api.openai.com/v1/responses", { method: "POST" });
+				await vi.advanceTimersByTimeAsync(0);
+				expect(fetchMock).not.toHaveBeenCalled();
+				await vi.advanceTimersByTimeAsync(waitMs);
+				const response = await pending;
+
+				expect(response.status).toBe(200);
+				expect(selectedTokens(fetchMock)).toEqual(["access-A"]);
+				await runtime.manager.flushPendingSave();
+				expect(runtime.manager.getAccountAt(0)).toMatchObject({ enabled: false, userDisabled: true });
+				expect(storageRef.current?.accounts[0]).toMatchObject({ enabled: false, userDisabled: true });
+			},
+		);
+
+		it.each([
+			["automatic auth disablement", "Disabled automatically after repeated authentication failures.", undefined],
+			["workspace deactivation", "Disabled automatically after workspace deactivation.", undefined],
+			["missing OAuth scopes", "Re-auth required for missing OAuth scope(s): email, offline_access.", "openid profile"],
+		] as const)("does not treat %s as a usable manual override", async (_reason, accountNote, oauthScope) => {
+			storageRef.current!.accounts.splice(1);
+			Object.assign(storageRef.current!.accounts[0]!, { accountNote, oauthScope });
+			const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+			globalThis.fetch = fetchMock;
+			const runtime = await createRuntimeWithManager(1);
+			blockAccount(runtime.manager, "upstream rate limit");
+
+			const response = await runtime.request("https://api.openai.com/v1/responses", { method: "POST" });
+
+			expect(response.status).toBe(503);
+			expect(await response.json()).toMatchObject({ error: { code: "all_accounts_disabled" } });
+			expect(runtime.manager.getMinWaitTimeForFamily("gpt-5.1", "gpt-5.1")).toBe(0);
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(storageRef.current?.accounts[0]).toMatchObject({ enabled: false, userDisabled: true });
+		});
 	});
 
 	it.each(["hybrid", "custom"] as const)("%s routes disable, manual switch, failover without losing the switch, and restart through actual selection", async (strategy) => {

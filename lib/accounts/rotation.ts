@@ -74,6 +74,12 @@ export class AccountRotation {
 		return account;
 	}
 
+	/** Temporary blocks still apply, but user disablement does not block this process. */
+	hasManualAccountOverride(account: ManagedAccount): boolean {
+		return this.manualOverrideIndex === account.index &&
+			this.state.canOverrideUserDisabled(account);
+	}
+
 	/**
 	 * Whether an account can serve a request for this (family, model) right now:
 	 * enabled, not rate-limited (real server 429s tracked in rateLimitResetTimes),
@@ -657,12 +663,12 @@ export class AccountRotation {
 		const pooledKeys = accountIds?.length ? accountIds : null;
 		const enabledAccounts = this.state.accounts.filter(
 			(account) =>
-				account.enabled !== false &&
+				(account.enabled !== false || this.hasManualAccountOverride(account)) &&
 				(pooledKeys === null ||
 					pooledKeys.some((key) => matchesModelPoolAccountKey(account, key))),
 		);
 		const available = enabledAccounts.filter((account) =>
-			this.isSelectable(account, family, model),
+			this.isSelectable(account, family, model, this.hasManualAccountOverride(account)),
 		);
 		if (available.length > 0) return 0;
 		if (enabledAccounts.length === 0) return 0;
@@ -713,11 +719,9 @@ export class AccountRotation {
 			// An account blocked only by a depleted local token bucket becomes
 			// available again after refill; include that wait so a fully
 			// token-depleted pool waits for refill instead of returning 0 (503).
-			if (account.enabled !== false) {
-				const tokenWait = tokenTracker.msUntilToken(account.index, tokenQuotaKey);
-				if (tokenWait > 0 && Number.isFinite(tokenWait)) {
-					blocks.push(tokenWait);
-				}
+			const tokenWait = tokenTracker.msUntilToken(account.index, tokenQuotaKey);
+			if (tokenWait > 0 && Number.isFinite(tokenWait)) {
+				blocks.push(tokenWait);
 			}
 
 			if (blocks.length > 0) {

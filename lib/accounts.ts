@@ -147,7 +147,12 @@ export class AccountManager {
 		model?: string | null,
 		now = nowMs(),
 	): AccountSelectionExplainability[] {
-		return this.state.getSelectionExplainability(family, model, now);
+		return this.state.getSelectionExplainability(family, model, now).map((entry) => {
+			const account = this.state.accounts[entry.index];
+			return account && this.rotation.hasManualAccountOverride(account)
+				? { ...entry, manualOverride: true }
+				: entry;
+		});
 	}
 
 	setActiveIndex(index: number): ManagedAccount | null {

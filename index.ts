@@ -4609,7 +4609,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 							const poolIndices = new Set(poolAccounts.map((account) => account.index));
 							const enabledPoolSelection = accountManager
 								.getSelectionExplainability(modelFamily, model)
-								.filter((entry) => entry.enabled && poolIndices.has(entry.index));
+								.filter((entry) => (entry.enabled || entry.manualOverride) && poolIndices.has(entry.index));
 							const poolUpstreamBlocked = enabledPoolSelection.length > 0 && enabledPoolSelection.every(
 								(entry) => entry.rateLimitedUntil !== undefined || entry.quotaExhaustedUntil !== undefined,
 							);
@@ -4679,10 +4679,18 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 								// must not render as one — a leftover auth-failure cooldown
 								// would otherwise report "all rate-limited" forever (#288).
 								const configuredAccounts = accountManager.getAccountsSnapshot();
+								const selection = count > 0
+									? accountManager.getSelectionExplainability(modelFamily, model)
+									: [];
+								const manualOverrideIndices = new Set(
+									selection.filter((entry) => entry.manualOverride).map((entry) => entry.index),
+								);
 								const allDisabled =
 									count > 0 &&
 									configuredAccounts.length > 0 &&
-									configuredAccounts.every((entry) => entry.enabled === false);
+									configuredAccounts.every((entry) =>
+										entry.enabled === false && !manualOverrideIndices.has(entry.index),
+									);
 								const allAutoDisabled =
 									allDisabled &&
 									configuredAccounts.every((entry) =>
@@ -4700,9 +4708,7 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 											!fetchedAccountKeys.has(getAccountDiagnosticsKey(account)),
 									).length;
 
-								const enabledSelection = count > 0 ? accountManager
-									.getSelectionExplainability(modelFamily, model)
-									.filter((entry) => entry.enabled) : [];
+								const enabledSelection = selection.filter((entry) => entry.enabled || entry.manualOverride);
 								const upstreamBlocked = enabledSelection.length > 0 && enabledSelection.every(
 									(entry) => entry.rateLimitedUntil !== undefined || entry.quotaExhaustedUntil !== undefined,
 								);
@@ -4718,7 +4724,9 @@ async function createPluginRuntime({ client, directory = process.cwd() }: {
 								const availabilityMessage = upstreamBlocked
 									? `All ${enabledSelection.length} enabled account(s) are rate-limited or quota-exhausted upstream.`
 									: `No enabled account is currently selectable${blockDetails ? ` (${blockDetails})` : ""}.`;
-								const disabledCount = configuredAccounts.filter((entry) => entry.enabled === false).length;
+								const disabledCount = configuredAccounts.filter((entry) =>
+									entry.enabled === false && !manualOverrideIndices.has(entry.index),
+								).length;
 								const disabledDetail = disabledCount > 0 ? ` ${disabledCount} configured account(s) are disabled.` : "";
 
 								// Every enabled account has an active upstream block. Before waiting out a
