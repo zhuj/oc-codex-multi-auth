@@ -1,6 +1,6 @@
 # lib/tools/
 
-Per-tool modules for the 25 `codex-*` tools registered by the plugin.
+Per-tool modules for the 26 `codex-*` tools registered by the plugin.
 `index.ts` builds a `ToolContext` in `OpenAIOAuthPlugin` (root `index.ts`) and
 passes it to `createToolRegistry(ctx)`, which maps each `codex-<name>` tool id to
 its factory.
@@ -13,7 +13,7 @@ args.ts             # shared format/includeSensitive constants (values + descrip
 output.ts           # shared tool-output contract: error envelope, sanitizers, withToolErrorEnvelope wrapper
 doctor-repair.ts    # shared doctor repair pass (refresh + stale-state clear); used by codex-doctor and CLI --fix
 refresh-account.ts  # shared single-use refresh-token persistence; used by account-management tools
-codex-<name>.ts     # one file per tool: list, switch, warm, status, limits, reset, metrics, help, setup,
+codex-<name>.ts     # one file per tool: list, switch, account-enabled, warm, status, limits, reset, metrics, help, setup,
                     # doctor, next, label, tag, pool, note, dashboard, health, enable, remove, refresh,
                     # export, import, diag, diff — plus codex-keychain.ts
 ```

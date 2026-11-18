@@ -544,7 +544,64 @@ describe("AccountManager", () => {
 		const account = manager.getCurrentAccount();
 
 		expect(account?.enabled).toBe(false);
+		expect(account?.userDisabled).toBe(true);
 		expect(account?.accountNote).toBe("paused by hand");
+	});
+
+	it("keeps explicit user choice after OAuth scope recovery", () => {
+		const now = Date.now();
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					refreshToken: "refresh-token",
+					oauthScope: SCOPE,
+					enabled: false,
+					userDisabled: true,
+					accountNote:
+						"Re-auth required for missing OAuth scope(s): openid, profile, email, offline_access.",
+					addedAt: now,
+					lastUsed: now,
+				},
+			],
+		});
+
+		const account = manager.getCurrentAccount();
+
+		expect(account?.enabled).toBe(false);
+		expect(account?.userDisabled).toBe(true);
+		expect(account?.accountNote).toBeUndefined();
+	});
+
+	it("defaults existing enabled accounts to user-enabled", () => {
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			activeIndex: 0,
+			accounts: [{ refreshToken: "refresh-token", addedAt: 1, lastUsed: 1 }],
+		});
+
+		expect(manager.getCurrentAccount()?.userDisabled).toBe(false);
+	});
+
+	it("records user intent when the manager enablement setter is used", () => {
+		const manager = new AccountManager(undefined, {
+			version: 3,
+			activeIndex: 0,
+			accounts: [{ refreshToken: "refresh-token", addedAt: 1, lastUsed: 1 }],
+		});
+
+		manager.setAccountEnabled(0, false);
+		expect(manager.getCurrentAccount()).toMatchObject({
+			enabled: false,
+			userDisabled: true,
+		});
+
+		manager.setAccountEnabled(0, true);
+		expect(manager.getCurrentAccount()).toMatchObject({
+			enabled: true,
+			userDisabled: false,
+		});
 	});
 
 	// The repair is applied in memory by initializeFromStorage; without a flush

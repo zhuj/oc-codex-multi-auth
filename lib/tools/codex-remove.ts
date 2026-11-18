@@ -5,7 +5,6 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { loadAccounts, withAccountStorageTransaction } from "../storage.js";
-import { AccountManager } from "../accounts.js";
 import { resolveDisplayEmail } from "../account-display.js";
 import { logWarn } from "../logger.js";
 import { MODEL_FAMILIES } from "../prompts/codex.js";
@@ -25,8 +24,7 @@ export function createCodexRemoveTool(ctx: ToolContext): ToolDefinition {
 		formatCommandAccountLabel,
 		resolveMaskEmail,
 		getStatusMarker,
-		cachedAccountManagerRef,
-		accountManagerPromiseRef,
+		withAccountManagerMutation,
 	} = ctx;
 	const definition = tool({
 		description:
@@ -133,8 +131,8 @@ export function createCodexRemoveTool(ctx: ToolContext): ToolDefinition {
 						removedEmail?: string;
 				  };
 
-			const outcome = await withAccountStorageTransaction<RemoveOutcome>(
-				async (current, persist) => {
+			const outcome = await withAccountManagerMutation(
+				() => withAccountStorageTransaction<RemoveOutcome>(async (current, persist) => {
 					const storage = current;
 					const accounts = storage?.accounts ?? [];
 					const targetIndex = (resolvedIndex ?? 0) - 1;
@@ -206,7 +204,8 @@ export function createCodexRemoveTool(ctx: ToolContext): ToolDefinition {
 						matchingEmailRemaining,
 						removedEmail: account.email,
 					};
-				},
+				}),
+				(result) => result.kind === "ok",
 			);
 
 			if (outcome.kind === "invalid") {
@@ -252,12 +251,6 @@ export function createCodexRemoveTool(ctx: ToolContext): ToolDefinition {
 					].join("\n");
 				}
 				return `Failed to remove ${outcome.label}: account storage could not be updated.`;
-			}
-
-			if (cachedAccountManagerRef.current) {
-				const reloadedManager = await AccountManager.loadFromDisk();
-				cachedAccountManagerRef.current = reloadedManager;
-				accountManagerPromiseRef.current = Promise.resolve(reloadedManager);
 			}
 
 			const { label, remaining, matchingEmailRemaining, removedEmail } = outcome;

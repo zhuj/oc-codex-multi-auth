@@ -6,6 +6,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { loadAccounts } from "../storage.js";
 import { AccountManager } from "../accounts.js";
+import { isPersistedUserDisabled } from "../accounts/state.js";
 import { getRefreshQueueMetrics } from "../refresh-queue.js";
 import { recommendBeginnerNextAction } from "../ui/beginner.js";
 import {
@@ -156,6 +157,9 @@ export function createCodexDashboardTool(ctx: ToolContext): ToolDefinition {
 							peerAccounts: storage.accounts,
 						}),
 						eligible: entry.eligible,
+						userDisabled: isPersistedUserDisabled(
+							storage.accounts[entry.index] ?? {},
+						),
 						healthScore: entry.healthScore,
 						tokensAvailable: entry.tokensAvailable,
 						reasons: [...entry.reasons],

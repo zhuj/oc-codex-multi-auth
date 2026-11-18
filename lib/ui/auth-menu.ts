@@ -15,6 +15,8 @@ export type AccountStatus =
 	| "rate-limited"
 	| "cooldown"
 	| "disabled"
+	| "user-disabled"
+	| "temporarily-disabled"
 	| "error"
 	| "flagged"
 	| "unknown";
@@ -30,6 +32,7 @@ export interface AccountInfo {
 	status?: AccountStatus;
 	isCurrentAccount?: boolean;
 	enabled?: boolean;
+	userDisabled?: boolean;
 }
 
 export interface AuthMenuOptions {
@@ -92,6 +95,10 @@ function statusBadge(status: AccountStatus | undefined): string {
 				return formatUiBadge(ui, "flagged", "danger");
 			case "disabled":
 				return formatUiBadge(ui, "disabled", "danger");
+			case "user-disabled":
+				return formatUiBadge(ui, "user-disabled", "danger");
+			case "temporarily-disabled":
+				return formatUiBadge(ui, "temporarily-disabled", "warning");
 			case "error":
 				return formatUiBadge(ui, "error", "danger");
 			default:
@@ -112,6 +119,10 @@ function statusBadge(status: AccountStatus | undefined): string {
 			return ansiBadge("[flagged]", ANSI.red);
 		case "disabled":
 			return ansiBadge("[disabled]", ANSI.red);
+		case "user-disabled":
+			return ansiBadge("[user-disabled]", ANSI.red);
+		case "temporarily-disabled":
+			return ansiBadge("[temporarily-disabled]", ANSI.yellow);
 		case "error":
 			return ansiBadge("[error]", ANSI.red);
 		default:
@@ -181,7 +192,7 @@ export async function showAuthMenu(
 				: "";
 			const badge = statusBadge(account.status);
 			const disabledBadge =
-				account.enabled === false
+				account.enabled === false && !badge
 					? (ui.v2Enabled ? ` ${formatUiBadge(ui, "disabled", "danger")}` : ` ${ansiBadge("[disabled]", ANSI.red)}`)
 					: "";
 			const statusSuffix = badge ? ` ${badge}` : "";
@@ -224,7 +235,7 @@ export async function showAccountDetails(
 	const peerAccounts = options.peerAccounts;
 	const header =
 		`${accountTitle(account, maskEmail, peerAccounts)} ${statusBadge(account.status)}` +
-		(account.enabled === false
+		(account.enabled === false && !account.status
 			? (ui.v2Enabled
 				? ` ${formatUiBadge(ui, "disabled", "danger")}`
 				: ` ${ansiBadge("[disabled]", ANSI.red)}`)
@@ -236,9 +247,11 @@ export async function showAccountDetails(
 			[
 				{ label: "Back", value: "back" },
 				{
-					label: account.enabled === false ? "Enable account" : "Disable account",
+					label: account.userDisabled
+						? "Enable automatic routing"
+						: "Disable automatic routing",
 					value: "toggle",
-					color: account.enabled === false ? "green" : "yellow",
+					color: account.userDisabled ? "green" : "yellow",
 				},
 				{ label: "Refresh account", value: "refresh", color: "cyan" },
 				{ label: "Delete this account", value: "delete", color: "red" },
@@ -266,4 +279,3 @@ export async function showAccountDetails(
 }
 
 export { isTTY };
-

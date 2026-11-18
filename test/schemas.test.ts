@@ -49,6 +49,7 @@ describe("PluginConfigSchema", () => {
 			},
 			tokenRefreshSkewMs: 60000,
 			rateLimitToastDebounceMs: 30000,
+			rateLimitJitterFactor: 0.35,
 			toastDurationMs: 5000,
 			accountToasts: true,
 			perProjectAccounts: true,
@@ -70,6 +71,16 @@ describe("PluginConfigSchema", () => {
 	it("rejects negative numbers for numeric fields", () => {
 		const result = PluginConfigSchema.safeParse({ retryAllAccountsMaxWaitMs: -100 });
 		expect(result.success).toBe(false);
+	});
+
+	it("accepts rate-limit jitter factor boundaries", () => {
+		expect(PluginConfigSchema.safeParse({ rateLimitJitterFactor: 0 }).success).toBe(true);
+		expect(PluginConfigSchema.safeParse({ rateLimitJitterFactor: 1 }).success).toBe(true);
+	});
+
+	it("rejects rate-limit jitter factors outside [0, 1]", () => {
+		expect(PluginConfigSchema.safeParse({ rateLimitJitterFactor: -0.1 }).success).toBe(false);
+		expect(PluginConfigSchema.safeParse({ rateLimitJitterFactor: 1.1 }).success).toBe(false);
 	});
 
 	it("rejects timeout settings below 1000ms", () => {
@@ -132,6 +143,7 @@ describe("AccountMetadataV3Schema", () => {
 			accountTags: ["work", "team-a"],
 			accountNote: "Primary workspace",
 			email: "test@example.com",
+			userDisabled: true,
 			lastSwitchReason: "rate-limit" as const,
 			rateLimitResetTimes: { "gpt-5.2-codex": Date.now() + 60000 },
 			coolingDownUntil: Date.now() + 30000,
@@ -139,6 +151,19 @@ describe("AccountMetadataV3Schema", () => {
 		};
 		const result = AccountMetadataV3Schema.safeParse(fullAccount);
 		expect(result.success).toBe(true);
+	});
+
+	it("preserves explicit user-disable provenance", () => {
+		const result = AccountMetadataV3Schema.safeParse({
+			...validAccount,
+			enabled: false,
+			userDisabled: true,
+		});
+
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.userDisabled).toBe(true);
+		}
 	});
 
 	it("rejects empty refreshToken", () => {

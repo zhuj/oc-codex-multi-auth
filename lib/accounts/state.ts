@@ -33,6 +33,25 @@ import { getWorkspaceIdentityKey } from "../storage/identity.js";
 import { getHealthTracker, getTokenTracker } from "../rotation.js";
 import { remapRateLimitBackoffAfterRemoval } from "../request/rate-limit-backoff.js";
 import { logWarn } from "../logger.js";
+import {
+	describeDisabledReason,
+	hasAutoDisableNote,
+	hasMissingScopeReauthNote,
+	isPersistedUserDisabled,
+	MISSING_SCOPE_NOTE_MARKER,
+	stripAutoDisableNote,
+} from "./disabled.js";
+export {
+	appendAutoDisableNote,
+	AUTH_FAILURE_DISABLE_NOTE_MARKER,
+	describeDisabledReason,
+	hasAuthFailureDisableNote,
+	hasAutoDisableNote,
+	hasMissingScopeReauthNote,
+	isPersistedUserDisabled,
+	stripAutoDisableNote,
+	WORKSPACE_DEACTIVATED_NOTE_MARKER,
+} from "./disabled.js";
 
 export interface ManagedAccount {
 	index: number;
@@ -47,6 +66,7 @@ export interface ManagedAccount {
 	email?: string;
 	refreshToken: string;
 	enabled?: boolean;
+	userDisabled: boolean;
 	access?: string;
 	expires?: number;
 	oauthScope?: string;
@@ -202,14 +222,8 @@ function appendReauthNote(accountNote: string | undefined, missingScopes: string
 	return preserved ? `${preserved} ${suffix}` : suffix;
 }
 
-const MISSING_SCOPE_NOTE_MARKER = "Re-auth required for missing OAuth scope(s):";
-
 function hasExplicitOAuthScope(scope: string | undefined): scope is string {
 	return typeof scope === "string" && scope.trim().length > 0;
-}
-
-export function hasMissingScopeReauthNote(accountNote: string | undefined): boolean {
-	return typeof accountNote === "string" && accountNote.includes(MISSING_SCOPE_NOTE_MARKER);
 }
 
 /**
@@ -222,86 +236,6 @@ export function stripReauthNote(accountNote: string | undefined): string | undef
 	const markerIndex = accountNote.indexOf(MISSING_SCOPE_NOTE_MARKER);
 	if (markerIndex < 0) return accountNote;
 	const preserved = accountNote.slice(0, markerIndex).trim();
-	return preserved.length > 0 ? preserved : undefined;
-}
-
-/**
- * Markers plugin code writes onto records it disables itself, so an
- * `enabled: false` it produced stays distinguishable from the operator's own
- * choice — which the load/repair paths honor as intentional (#288). A bare
- * `enabled: false` had meant "operator did it", leaving auto-disabled
- * accounts unexplainable in diagnostics and unreachable except via the TUI.
- * Re-enabling strips the marker; operator text around it survives.
- */
-export const AUTH_FAILURE_DISABLE_NOTE_MARKER =
-	"Disabled automatically after repeated authentication failures.";
-export const WORKSPACE_DEACTIVATED_NOTE_MARKER =
-	"Disabled automatically after workspace deactivation.";
-const AUTO_DISABLE_NOTE_MARKERS = [
-	AUTH_FAILURE_DISABLE_NOTE_MARKER,
-	WORKSPACE_DEACTIVATED_NOTE_MARKER,
-] as const;
-
-export function hasAuthFailureDisableNote(
-	accountNote: string | undefined,
-): boolean {
-	return (
-		typeof accountNote === "string" &&
-		accountNote.includes(AUTH_FAILURE_DISABLE_NOTE_MARKER)
-	);
-}
-
-export function hasAutoDisableNote(accountNote: string | undefined): boolean {
-	return (
-		typeof accountNote === "string" &&
-		AUTO_DISABLE_NOTE_MARKERS.some((marker) => accountNote.includes(marker))
-	);
-}
-
-/** Reason string for the selection explainability `reasons` list. */
-export function describeDisabledReason(accountNote: string | undefined): string {
-	if (hasAuthFailureDisableNote(accountNote)) return "disabled:auth-failures";
-	if (
-		typeof accountNote === "string" &&
-		accountNote.includes(WORKSPACE_DEACTIVATED_NOTE_MARKER)
-	) {
-		return "disabled:workspace-deactivated";
-	}
-	if (hasMissingScopeReauthNote(accountNote)) return "disabled:reauth-required";
-	return "disabled";
-}
-
-export function appendAutoDisableNote(
-	accountNote: string | undefined,
-	marker: (typeof AUTO_DISABLE_NOTE_MARKERS)[number],
-): string {
-	const preserved = stripAutoDisableNote(accountNote);
-	return preserved ? `${preserved} ${marker}` : marker;
-}
-
-/**
- * Removes only the auto-disable sentence, wherever it sits — operator text
- * before it and a later re-auth sentence after it both survive, unlike the
- * cut-to-end semantics `stripReauthNote` gets away with by always appending
- * last.
- */
-export function stripAutoDisableNote(
-	accountNote: string | undefined,
-): string | undefined {
-	if (!accountNote) return undefined;
-	let note = accountNote;
-	for (const marker of AUTO_DISABLE_NOTE_MARKERS) {
-		const markerIndex = note.indexOf(marker);
-		if (markerIndex < 0) continue;
-		// Swallow the joining space `appendAutoDisableNote` put in so removing
-		// a mid-string marker does not leave a double gap behind.
-		const start =
-			markerIndex > 0 && note[markerIndex - 1] === " "
-				? markerIndex - 1
-				: markerIndex;
-		note = `${note.slice(0, start)}${note.slice(markerIndex + marker.length)}`;
-	}
-	const preserved = note.trim();
 	return preserved.length > 0 ? preserved : undefined;
 }
 
@@ -365,6 +299,7 @@ export class AccountState {
 	 * `consumeScopeRepairs()` clears it, so the extra write happens once.
 	 */
 	private scopeRepairsPending = false;
+	private userDisabledBaseline = new WeakMap<ManagedAccount, boolean>();
 
 	/**
 	 * Identity keys of accounts this manager pushed in memory that no persisted
@@ -403,6 +338,7 @@ export class AccountState {
 		const fallbackOAuthScope = getAuthScope(authFallback);
 		const fallbackMissingOAuthScopes = getEnforceableMissingOAuthScopes(fallbackOAuthScope);
 
+		this.userDisabledBaseline = new WeakMap<ManagedAccount, boolean>();
 		if (stored && stored.accounts.length > 0) {
 			const baseNow = nowMs();
 			const fallbackMatch = authFallback
@@ -450,7 +386,11 @@ export class AccountState {
 					// A note-less `enabled: false` stays disabled: that one is the
 					// operator's own choice.
 					const disabledByScopeCheck =
-						account.enabled === false && hasMissingScopeReauthNote(account.accountNote);
+						account.enabled === false &&
+						account.userDisabled !== true &&
+						!hasAutoDisableNote(account.accountNote) &&
+						hasMissingScopeReauthNote(account.accountNote);
+					const userDisabled = isPersistedUserDisabled(account);
 					if (disabledByScopeCheck && missingOAuthScopes.length === 0) {
 						this.scopeRepairsPending = true;
 					}
@@ -470,16 +410,16 @@ export class AccountState {
 						accountTags: account.accountTags,
 						accountNote: missingOAuthScopes.length > 0
 							? appendReauthNote(account.accountNote, missingOAuthScopes)
-							: disabledByScopeCheck
+							: account.enabled === false && hasMissingScopeReauthNote(account.accountNote)
 								? stripReauthNote(account.accountNote)
 								: account.accountNote,
 						email: matchesFallback
 							? fallbackAccountEmail ?? sanitizeEmail(account.email)
 							: sanitizeEmail(account.email),
 						refreshToken,
-						enabled:
-							missingOAuthScopes.length === 0 &&
+						enabled: missingOAuthScopes.length === 0 && !userDisabled &&
 							(disabledByScopeCheck || account.enabled !== false),
+						userDisabled,
 						access:
 							matchesFallback && authFallback ? authFallback.access : account.accessToken,
 						expires:
@@ -503,6 +443,9 @@ export class AccountState {
 					};
 				})
 				.filter((account): account is ManagedAccount => account !== null);
+			for (const account of this.accounts) {
+				this.userDisabledBaseline.set(account, account.userDisabled);
+			}
 
 			const hasMatchingFallback = !!authFallback && fallbackMatch.indices.size > 0;
 
@@ -518,6 +461,7 @@ export class AccountState {
 						email: fallbackAccountEmail,
 						refreshToken: authFallback.refresh,
 						enabled: true,
+						userDisabled: false,
 						access: authFallback.access,
 						expires: authFallback.expires,
 						oauthScope: fallbackOAuthScope,
@@ -539,6 +483,7 @@ export class AccountState {
 						email: fallbackAccountEmail,
 						refreshToken: authFallback.refresh,
 						enabled: false,
+						userDisabled: false,
 						accountNote: appendReauthNote(undefined, fallbackMissingOAuthScopes),
 						access: authFallback.access,
 						expires: authFallback.expires,
@@ -576,8 +521,7 @@ export class AccountState {
 					`Stored OAuth fallback is missing required OAuth scope(s): ${fallbackMissingOAuthScopes.join(", ")}. Re-auth required.`,
 				);
 			}
-			this.accounts = [
-				{
+			const fallbackAccount: ManagedAccount = {
 					index: 0,
 					accountId: fallbackAccountId,
 					accountUserId: fallbackAccountUserId,
@@ -586,6 +530,7 @@ export class AccountState {
 					email: fallbackAccountEmail,
 					refreshToken: authFallback.refresh,
 					enabled,
+					userDisabled: false,
 					accountNote: enabled
 						? undefined
 						: appendReauthNote(undefined, fallbackMissingOAuthScopes),
@@ -596,10 +541,10 @@ export class AccountState {
 					lastUsed: 0,
 					lastSwitchReason: "initial",
 					rateLimitResetTimes: {},
-				},
-			];
-			const bootstrap = this.accounts[0];
-			if (bootstrap) this.markAccountAdded(bootstrap);
+				};
+			this.accounts = [fallbackAccount];
+			this.userDisabledBaseline.set(fallbackAccount, false);
+			this.markAccountAdded(fallbackAccount);
 			for (const family of MODEL_FAMILIES) {
 				this.currentAccountIndexByFamily[family] = 0;
 				this.cursorByFamily[family] = 0;
@@ -674,6 +619,7 @@ export class AccountState {
 
 			if (!enabled) {
 				reasons.push(describeDisabledReason(account.accountNote));
+				reasons.push(account.userDisabled ? "user-disabled" : "temporarily-disabled");
 			}
 			if (rateLimitedUntil !== undefined) reasons.push("rate-limited");
 			if (quotaExhaustedUntil !== undefined) reasons.push("quota-exhausted");
@@ -926,7 +872,10 @@ export class AccountState {
 		if (index < 0 || index >= this.accounts.length) return null;
 		const account = this.accounts[index];
 		if (!account) return null;
-		account.enabled = enabled;
+		account.userDisabled = !enabled;
+		account.enabled = enabled
+			? getEnforceableMissingOAuthScopes(account.oauthScope).length === 0
+			: false;
 		if (enabled) {
 			// Re-enabling drops the plugin's own attribution; operator text
 			// around the marker survives (strip preserves it).
@@ -938,6 +887,29 @@ export class AccountState {
 			}
 		}
 		return account;
+	}
+
+	getUserDisabledBaseline(account: ManagedAccount): boolean {
+		return this.userDisabledBaseline.get(account) ?? account.userDisabled;
+	}
+
+	adoptUserDisabled(account: ManagedAccount, userDisabled: boolean): void {
+		account.userDisabled = userDisabled;
+		account.enabled = !userDisabled && !hasAutoDisableNote(account.accountNote) &&
+			getEnforceableMissingOAuthScopes(account.oauthScope).length === 0;
+		this.userDisabledBaseline.set(account, userDisabled);
+	}
+
+	markUserDisabledSaved(account: ManagedAccount): void {
+		this.userDisabledBaseline.set(account, account.userDisabled);
+	}
+
+	canOverrideUserDisabled(account: ManagedAccount): boolean {
+		return (
+			account.userDisabled &&
+			!hasAutoDisableNote(account.accountNote) &&
+			getEnforceableMissingOAuthScopes(account.oauthScope).length === 0
+		);
 	}
 
 	/**
