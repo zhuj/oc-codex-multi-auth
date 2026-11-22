@@ -14,6 +14,7 @@
  * seven accounts are queried one after another.
  */
 
+import { resolve } from "node:path";
 import {
 	createUsageAccountFingerprint,
 	deduplicateUsageAccountIndices,
@@ -33,7 +34,7 @@ import { logDebug, maskString } from "./logger.js";
 import type { QuotaOverviewAccount } from "./quota-overview.js";
 import { loadAccounts, type AccountStorageV3 } from "./storage.js";
 import {
-	isFreshTuiQuotaSnapshot,
+	getTuiQuotaOverviewCachePath,
 	readTuiQuotaOverviewSnapshot,
 	writeTuiQuotaOverviewSnapshot,
 	TUI_QUOTA_CACHE_VERSION,
@@ -41,6 +42,11 @@ import {
 	type TuiQuotaOverviewSnapshot,
 	type TuiQuotaSnapshot,
 } from "./tui-quota-cache.js";
+import {
+	claimTuiQuotaOverviewAttempt,
+	normalizeTuiQuotaOverviewRefreshInterval,
+	type TuiQuotaOverviewLease,
+} from "./tui-quota-throttle.js";
 
 /**
  * Accounts queried at once. Matches the quota monitor's own limit: this talks
@@ -48,6 +54,47 @@ import {
  * should not arrive as a dozen simultaneous requests.
  */
 const MAX_CONCURRENCY = 2;
+
+interface OverviewThrottleState {
+	attemptedAt?: number;
+	snapshot?: TuiQuotaOverviewSnapshot;
+	pending?: Promise<TuiQuotaOverviewSnapshot | undefined>;
+}
+
+const overviewThrottle = new Map<string, OverviewThrottleState>();
+
+/** Test hook: the on-disk attempt budget intentionally survives a process reset. */
+export function resetTuiQuotaOverviewThrottle(): void {
+	overviewThrottle.clear();
+}
+
+function latestSnapshotChange(snapshot: TuiQuotaOverviewSnapshot): number {
+	return snapshot.accounts.reduce(
+		(latest, account) => Math.max(latest, account.fetchedAt ?? 0, account.readFailedAt ?? 0),
+		snapshot.fetchedAt,
+	);
+}
+
+async function readCachedOverview(
+	cachePath: string,
+	state: OverviewThrottleState,
+): Promise<TuiQuotaOverviewSnapshot | undefined> {
+	const cached = await readTuiQuotaOverviewSnapshot(cachePath);
+	if (cached && (!state.snapshot || latestSnapshotChange(cached) > latestSnapshotChange(state.snapshot))) {
+		state.snapshot = cached;
+	}
+	// A failed write must not replace this process's newer reading with the
+	// older file. On equal timestamps, keep the last in-memory result.
+	return state.snapshot;
+}
+
+interface FetchTuiQuotaOverviewParams {
+	cachePath?: string;
+	now?: number;
+	loadStorage?: () => Promise<AccountStorageV3 | null>;
+	enabled?: boolean;
+	refreshIntervalMs?: number;
+}
 
 function toOverviewLimit(window: LimitWindow, label: string) {
 	return {
@@ -113,11 +160,13 @@ type OverviewFetchResult =
 async function fetchOverviewAccount(
 	storage: AccountStorageV3,
 	index: number,
+	lease: TuiQuotaOverviewLease,
 ): Promise<OverviewFetchResult | undefined> {
 	const account = storage.accounts[index];
-	if (!account) return undefined;
+	if (!account || !lease.isValid()) return undefined;
 	try {
 		const credentials = await ensureCodexUsageAccessToken({ storage, account });
+		if (!lease.isValid()) return undefined;
 		const accountId = resolveCodexUsageAccountId({
 			account,
 			accessToken: credentials.accessToken,
@@ -154,27 +203,81 @@ async function fetchOverviewAccount(
 	}
 }
 
-export async function fetchTuiQuotaOverview(params: {
-	cachePath?: string;
-	now?: number;
-	loadStorage?: () => Promise<AccountStorageV3 | null>;
-}): Promise<TuiQuotaOverviewSnapshot | undefined> {
-	const now = params.now ?? Date.now();
-	const cached = await readTuiQuotaOverviewSnapshot(params.cachePath);
-	if (cached && isFreshTuiQuotaSnapshot(cached, now)) return cached;
+export function fetchTuiQuotaOverview(
+	params: FetchTuiQuotaOverviewParams,
+): Promise<TuiQuotaOverviewSnapshot | undefined> {
+	const cachePath = resolve(params.cachePath ?? getTuiQuotaOverviewCachePath());
+	let state = overviewThrottle.get(cachePath);
+	if (!state) {
+		state = {};
+		overviewThrottle.set(cachePath, state);
+	}
+	if (params.enabled === false) return readCachedOverview(cachePath, state);
+	if (state.pending) return state.pending;
+	const current = state;
+	// Install the promise before the first cache read resolves. Otherwise two
+	// cold callers could both enter the sweep before either records an attempt.
+	const pending = refreshTuiQuotaOverview(params, cachePath, current)
+		.then((snapshot) => {
+			current.snapshot = snapshot;
+			return snapshot;
+		})
+		.finally(() => {
+			if (current.pending === pending) current.pending = undefined;
+		});
+	current.pending = pending;
+	return pending;
+}
 
-	const storage = await (params.loadStorage ?? loadAccounts)();
+async function refreshTuiQuotaOverview(
+	params: FetchTuiQuotaOverviewParams,
+	cachePath: string,
+	state: OverviewThrottleState,
+): Promise<TuiQuotaOverviewSnapshot | undefined> {
+	const now = params.now ?? Date.now();
+	const refreshIntervalMs = normalizeTuiQuotaOverviewRefreshInterval(params.refreshIntervalMs);
+	const cached = await readCachedOverview(cachePath, state);
+	if (
+		(state.attemptedAt !== undefined && now - state.attemptedAt < refreshIntervalMs) ||
+		(cached && now - cached.fetchedAt < refreshIntervalMs)
+	) return cached;
+
+	const reservation = await claimTuiQuotaOverviewAttempt({ cachePath, now, refreshIntervalMs });
+	state.attemptedAt = reservation.attemptedAt;
+	if (!reservation.lease) return cached;
+	try {
+		return await fetchFreshOverview({ ...params, cachePath, now, cached, lease: reservation.lease });
+	} finally {
+		await reservation.lease.release();
+	}
+}
+
+async function fetchFreshOverview(params: {
+	cachePath: string;
+	now: number;
+	cached: TuiQuotaOverviewSnapshot | undefined;
+	loadStorage?: () => Promise<AccountStorageV3 | null>;
+	lease: TuiQuotaOverviewLease;
+}): Promise<TuiQuotaOverviewSnapshot | undefined> {
+	const { now, cached, cachePath, lease } = params;
+	let storage: AccountStorageV3 | null;
+	try {
+		storage = await (params.loadStorage ?? loadAccounts)();
+	} catch {
+		logDebug("Using cached pool quota because account storage could not be read");
+		return cached;
+	}
 	if (!storage || storage.accounts.length === 0) return undefined;
 
 	const indices = deduplicateUsageAccountIndices(storage);
 	const accounts: TuiQuotaOverviewAccount[] = [];
-	// Set when an account this pass could not fetch keeps its previous
-	// reading instead of dropping out of the snapshot.
-	let carriedOver = false;
+	// Date the enabled pool by its oldest carried reading. Disabled rows keep
+	// their own timestamps for the sidebar without aging the pool summary.
+	let oldestEnabledReading = now;
 	for (let offset = 0; offset < indices.length; offset += MAX_CONCURRENCY) {
 		const chunk = indices.slice(offset, offset + MAX_CONCURRENCY);
 		const results = await Promise.all(
-			chunk.map((index) => fetchOverviewAccount(storage, index)),
+			chunk.map((index) => fetchOverviewAccount(storage, index, lease)),
 		);
 		for (const [position, result] of results.entries()) {
 			if (result && "reading" in result) {
@@ -216,8 +319,25 @@ export async function fetchTuiQuotaOverview(params: {
 						}
 						: {}),
 				});
-				carriedOver = true;
+				oldestEnabledReading = Math.min(oldestEnabledReading, previous.fetchedAt ?? cached?.fetchedAt ?? now);
 			}
+		}
+	}
+	// Disabled accounts are never queried, but a sidebar can still show their
+	// last known reading. Match identity rather than old pool position, and do
+	// not let those rows age the enabled pool's successful refresh timestamp.
+	for (const [index, account] of storage.accounts.entries()) {
+		if (account.enabled !== false) continue;
+		const fingerprint = createUsageAccountFingerprint(account);
+		const previous = cached?.accounts.find((candidate) => candidate.fingerprint === fingerprint);
+		if (previous) {
+			accounts.push({
+				...previous,
+				index: index + 1,
+				email: account.email?.trim() || undefined,
+				label: account.accountLabel?.trim() || undefined,
+				fetchedAt: previous.fetchedAt ?? cached?.fetchedAt,
+			});
 		}
 	}
 	// Every account failing means the pool was not observed at all, which is a
@@ -232,12 +352,11 @@ export async function fetchTuiQuotaOverview(params: {
 		// A snapshot carrying a reused reading is only as fresh as that
 		// reading, so it keeps the previous fetch time - the stale flag is how
 		// the line says "part of this is not new" without dropping it.
-		fetchedAt:
-			carriedOver && cached ? Math.min(cached.fetchedAt, now) : now,
+		fetchedAt: oldestEnabledReading,
 		accounts,
 	};
 	try {
-		await writeTuiQuotaOverviewSnapshot(snapshot, params.cachePath);
+		await writeTuiQuotaOverviewSnapshot(snapshot, cachePath);
 	} catch (error) {
 		logDebug(
 			`Failed to cache the pool quota snapshot: ${(error as Error).message}`,
@@ -252,7 +371,7 @@ export async function fetchTuiQuotaOverview(params: {
  * The pool is re-read on an interval, but the account currently serving
  * requests has its quota pushed from response headers after every single
  * response. Without this the line would show that account's numbers as they
- * were up to five minutes ago while the user watches their own requests spend
+ * were at the last poll while the user watches their own requests spend
  * it - the one account whose figure a reader can check against their own
  * activity would be the one that looks wrong.
  *

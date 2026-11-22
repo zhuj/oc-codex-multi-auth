@@ -20,6 +20,46 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+function statusPayload(overrides: Record<string, unknown> = {}) {
+	return {
+		text: "[work] quota ready", details: "Quota details", showFor: "always", accountStorage: "global",
+		accounts: [{ index: 1, label: "Work", active: true, enabled: true }],
+		...overrides,
+	};
+}
+
+function createHarness(response: unknown) {
+	type RenderedText = { children: string; fg: string; visible?: boolean; flexShrink?: number; minWidth?: number; truncate?: boolean; wrapMode?: string };
+	const slots = new Map<string, { render: (props: object) => RenderedText | null }>();
+	const commands: Array<{ id: string; run: () => Promise<void> }> = [];
+	const status = vi.fn().mockResolvedValue(response);
+	const alert = vi.fn();
+	const unregister = vi.fn();
+	const theme = {
+		text: {
+			base: "base", muted: "muted",
+			feedback: {
+				success: { base: "success" }, warning: { base: "warning" },
+				error: { base: "error" }, info: { base: "info" },
+			},
+		},
+		hue: { accent: { 500: "accent" } },
+	};
+	const context = {
+		location: { directory: "/tmp/opencode/project" }, renderer: { width: 100 },
+		client: { rpc: () => ({ status }) }, theme,
+		data: { session: { get: () => undefined, message: { list: () => [] } }, location: { default: () => ({ directory: "/tmp/opencode/project" }) } },
+		keymap: { layer: (factory: () => { commands: typeof commands }) => commands.push(...factory().commands) },
+		ui: { dialog: { alert }, slot: (claim: { append: string; render: (props: object) => RenderedText | null }) => {
+			slots.set(claim.append, claim);
+			return unregister;
+		} },
+	} as unknown as Plugin.Context;
+	const dispose = setupV2Tui(context);
+	slots.get("app")!.render({});
+	return { slots, commands, status, alert, unregister, theme, dispose };
+}
+
 describe("V2 accounts UI", () => {
 	it("exposes accounts without a mounted prompt and cleans up polling", async () => {
 		vi.useFakeTimers();
@@ -228,5 +268,163 @@ describe("V2 accounts UI", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		await commands.find((command) => command.id === "codex.logout")!.run();
 		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it("uses native theme colors reactively and accepts validated RGB overrides", async () => {
+		vi.useFakeTimers();
+		const harness = createHarness(statusPayload({
+			statusColor: "auto", statusTone: "warning",
+			sidebar: { enabled: true, showQuota: true, showResetTimes: true, color: "accent" },
+		}));
+		await vi.advanceTimersByTimeAsync(0);
+		const footer = harness.slots.get("prompt.footer.status")!.render({})!;
+		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
+		expect(footer.fg).toBe("warning");
+		expect(sidebar.fg).toBe("accent");
+		expect(footer).toMatchObject({ flexShrink: 1, minWidth: 0, truncate: true, wrapMode: "none" });
+		harness.theme.text.feedback.warning.base = "new-warning";
+		harness.theme.hue.accent[500] = "new-accent";
+		expect(footer.fg).toBe("new-warning");
+		expect(sidebar.fg).toBe("new-accent");
+		harness.status.mockResolvedValue(statusPayload({
+			statusColor: "#A1b2C3", statusTone: "danger",
+			sidebar: { enabled: true, showQuota: false, showResetTimes: false, color: "#123456" },
+		}));
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(footer.fg).toBe("#A1b2C3");
+		expect(sidebar.fg).toBe("#123456");
+		expect(footer.children).not.toContain("\x1b");
+		expect(sidebar.children).not.toContain("\x1b");
+	});
+
+	it.each([
+		["default", "normal", "base"],
+		["muted", "normal", "muted"],
+		["accent", "normal", "accent"],
+		["success", "danger", "success"],
+		["warning", "normal", "warning"],
+		["error", "normal", "error"],
+		["info", "normal", "info"],
+		["auto", "normal", "success"],
+		["auto", "warning", "warning"],
+		["auto", "danger", "error"],
+		["auto", "stale", "warning"],
+		["auto", "unknown", "muted"],
+		["\x1b[31m", "normal", "base"],
+		["$text.feedback.error.base", "normal", "base"],
+		["#bad", "normal", "base"],
+	])("resolves color %s with tone %s to %s on both surfaces", async (color, tone, expected) => {
+		vi.useFakeTimers();
+		const harness = createHarness(statusPayload({
+			statusColor: color, statusTone: tone,
+			sidebar: { enabled: true, showQuota: false, showResetTimes: false, color },
+		}));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(harness.slots.get("prompt.footer.status")!.render({})!.fg).toBe(expected);
+		expect(harness.slots.get("sidebar.content")!.render({})!.fg).toBe(expected);
+	});
+
+	it("keeps older RPC payloads name-only with the default theme color", async () => {
+		vi.useFakeTimers();
+		const harness = createHarness(statusPayload());
+		await vi.advanceTimersByTimeAsync(0);
+		const footer = harness.slots.get("prompt.footer.status")!.render({})!;
+		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
+		expect(footer.fg).toBe("base");
+		expect(sidebar.fg).toBe("base");
+		expect(sidebar.visible).toBe(true);
+		expect(sidebar.children).toBe("\nCodex accounts\n● 1. Work\n/codex-accounts");
+	});
+
+	it("updates quota display, independent detail toggles and sidebar visibility without adding pollers", async () => {
+		vi.useFakeTimers();
+		const now = Date.UTC(2026, 10, 22, 12);
+		vi.setSystemTime(now);
+		const accounts = [{
+			index: 1, label: "Full label", displayName: "Short", active: true, enabled: true,
+			quota: { stale: false, limits: [
+				{ label: "5h", leftPercent: 70, resetAtMs: now + 3_600_000 },
+				{ label: "weekly", leftPercent: 20, resetAtMs: now + 86_400_000 },
+			] },
+		}];
+		const harness = createHarness(statusPayload({
+			accounts, quotaDisplay: "free",
+			sidebar: { enabled: true, showQuota: true, showResetTimes: true, color: "default" },
+		}));
+		await vi.advanceTimersByTimeAsync(0);
+		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
+		expect(sidebar.children).toContain("1. Short");
+		expect(sidebar.children).toContain("5h 70% left, resets in 1h");
+		expect(sidebar.children).toContain("weekly 20% left, resets in 1d");
+		harness.status.mockResolvedValue(statusPayload({
+			accounts, quotaDisplay: "used",
+			sidebar: { enabled: true, showQuota: true, showResetTimes: false, color: "default" },
+		}));
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(sidebar.children).toContain("5h 30% used");
+		expect(sidebar.children).toContain("weekly 80% used");
+		expect(sidebar.children).not.toContain("resets");
+		harness.status.mockResolvedValue(statusPayload({
+			accounts, quotaDisplay: "used",
+			sidebar: { enabled: true, showQuota: false, showResetTimes: true, color: "default" },
+		}));
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(sidebar.children).toContain("5h resets in 59m");
+		expect(sidebar.children).not.toContain("%");
+		harness.status.mockResolvedValue(statusPayload({
+			accounts, quotaDisplay: "used",
+			sidebar: { enabled: false, showQuota: true, showResetTimes: true, color: "default" },
+		}));
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(sidebar.visible).toBe(false);
+		expect(sidebar.children).toBe("");
+		await harness.commands.find((command) => command.id === "codex.accounts")!.run();
+		expect(harness.alert).toHaveBeenCalledWith(expect.objectContaining({
+			title: "Codex accounts", message: expect.stringContaining("weekly 80% used, resets in 23h"),
+		}));
+		expect(vi.getTimerCount()).toBe(1);
+	});
+
+	it("counts down cached timestamps using only the existing local RPC interval", async () => {
+		vi.useFakeTimers();
+		const now = Date.UTC(2026, 10, 22, 12);
+		vi.setSystemTime(now);
+		const harness = createHarness(statusPayload({
+			sidebar: { enabled: true, showQuota: true, showResetTimes: true, color: "default" },
+			accounts: [{ index: 1, label: "Work", active: true, enabled: true,
+				quota: { stale: true, readFailed: true, limits: [{ label: "5h", leftPercent: 0, resetAtMs: now + 3000 }] },
+			}],
+		}));
+		await vi.advanceTimersByTimeAsync(0);
+		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
+		harness.slots.get("prompt.footer.status")!.render({});
+		expect(sidebar.children).toContain("5h 0% left, resets in 1m");
+		expect(sidebar.children).toContain("stale quota; refresh failed");
+		expect(harness.status).toHaveBeenCalledTimes(1);
+		expect(vi.getTimerCount()).toBe(1);
+		await vi.advanceTimersByTimeAsync(4000);
+		expect(sidebar.children).toContain("5h 0% left, reset due");
+		expect(harness.status).toHaveBeenCalledTimes(3);
+	});
+
+	it("coalesces pending polls and ignores a response after cleanup", async () => {
+		vi.useFakeTimers();
+		let resolveStatus = (_result: unknown) => {};
+		const pending = new Promise((resolve) => { resolveStatus = resolve; });
+		const harness = createHarness(pending);
+		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
+		await vi.advanceTimersByTimeAsync(4000);
+		expect(harness.status).toHaveBeenCalledTimes(1);
+		const signal = harness.status.mock.calls[0]?.[1].signal as AbortSignal;
+		for (const cleanup of mocks.cleanups.splice(0)) cleanup();
+		expect(signal.aborted).toBe(true);
+		resolveStatus(statusPayload({ sidebar: { enabled: false, showQuota: true, showResetTimes: true, color: "error" } }));
+		await vi.advanceTimersByTimeAsync(4000);
+		expect(sidebar.children).toContain("Loading accounts");
+		expect(sidebar.visible).toBe(true);
+		expect(harness.status).toHaveBeenCalledTimes(1);
+		expect(vi.getTimerCount()).toBe(0);
+		harness.dispose();
+		expect(harness.unregister).toHaveBeenCalledTimes(3);
 	});
 });

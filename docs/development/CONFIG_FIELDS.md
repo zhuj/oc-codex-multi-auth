@@ -124,6 +124,9 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `maskEmailInQuotaDetails` | `CODEX_TUI_MASK_EMAIL_DETAILS` | boolean | `false` | — | also mask the active account email in the quota details dialog (needs `maskEmail`) |
 | `quotaDisplay` | `CODEX_AUTH_QUOTA_DISPLAY` | `free` \| `used` | `free` | — | word quota percentages as headroom or consumption; presentation only |
 | `quotaStatus` | (file only) | object | see below | — | prompt quota status line shape |
+| `accountShortNames` | (file only) | account key → string | `{}` | 16 display columns per alias | seat key → account ID → exact email lookup; safe `[A1]` fallback |
+| `quotaSidebar` | (file only) | object | see below | — | V2 account list, quota percentages and reset countdowns |
+| `quotaRefresh` | (file only) | object | see below | — | shared TUI pool refresh budget; independent of quotaNotifications |
 | `quotaNotifications` | — | object | see below | — | macOS quota alerts + credit-protection poll |
 | `limitsSort` | (file only) | object | `{by: "account", direction: "asc"}` | `by`: `account`/`usage`/`reset`; `direction`: `asc`/`desc` | default account order for the standalone `limits` CLI |
 | `toastDurationMs` | `CODEX_AUTH_TOAST_DURATION_MS` | number (ms) | `5000` | 1000–86400000 | toast visibility duration |
@@ -137,7 +140,9 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `mode` | (file only) | `active` \| `overview` \| `resets` \| `credits` or array | `active` | unknown names dropped | screens to show; a list rotates every `rotateMs` |
 | `rotateMs` | (file only) | number (ms) | `5000` | 1000–86400000 | per-screen dwell |
 | `layout` | (file only) | `accounts` \| `aggregate` \| `count` \| `total` | `accounts` | — | segment layout |
-| `accountNames` | (file only) | `number` \| `label` \| `none` | `number` | — | `#1`, the `codex-label`/email local part, or nothing |
+| `accountNames` | (file only) | `number` \| `label` \| `short` \| `none` | `number` | — | pool names: `#1`, label/email local part, configured `[short]`, or nothing |
+| `activeAccountName` | (file only) | `short` \| `full` \| `number` \| `none` | `short` | — | active footer alias, previous email hint, `[A1]`, or no hint |
+| `color` | (file only) | semantic name or `#RRGGBB` | `auto` | native colors only | footer foreground, resolved by the client's theme (V1 and V2) |
 | `order` | (file only) | `number` \| `most-used` \| `least-used` \| `renewing-earliest` \| `renewing-latest` | `number` | — | account segment order |
 | `multipliers` | (file only) | boolean | `false` | — | `5x`/`20x` plan allotment badges |
 | `allotment` | (file only) | boolean | `false` | — | `24% of 26x` — weighted pool total in 1x seats |
@@ -149,6 +154,35 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `rows` | (file only) | integer | `1` | 1–4 | row ceiling, not a height |
 | `showFor` | (file only) | `always` \| `codex-models` | `always` | — | `codex-models` hides the line unless the session runs a routed model |
 | `prefix` | (file only) | string | `""` | 0–40 characters | text before the first row; later rows indent under it. Spent from the line's width budget (hidden when none is left); control characters stripped (V1 and V2) |
+
+### `quotaSidebar` object (all keys file-only)
+
+| field | env | type | default | bounds | meaning |
+| --- | --- | --- | --- | --- | --- |
+| `enabled` | (file only) | boolean | `true` | — | show V2 account sidebar; command remains available |
+| `accountNames` | (file only) | `short` \| `full` \| `number` \| `none` | `short` | — | display name; account index always remains |
+| `showQuota` | (file only) | boolean | `true` | — | per-window percentages using quotaDisplay |
+| `showResetTimes` | (file only) | boolean | `true` | — | per-window cached reset countdowns, independently of percentages |
+| `color` | (file only) | semantic name or `#RRGGBB` | `default` | native colors only | sidebar foreground |
+
+Both color settings accept `auto`, `default`, `muted`, `accent`, `success`,
+`warning`, `error`, `info`, and six-digit RGB hex. Invalid colors fall back
+without invalidating the rest of the config. Aliases are sanitized at display
+time; no alias, identity or secret is added to the quota-attempt sidecar.
+
+### `quotaRefresh` object (all keys file-only)
+
+| field | env | type | default | bounds | meaning |
+| --- | --- | --- | --- | --- | --- |
+| `enabled` | (file only) | boolean | `true` | — | false makes the TUI quota display cache-only; independent monitor/tools keep their own behavior |
+| `intervalMs` | (file only) | number (ms) | `600000` | 600000–86400000 (lower values clamped) | minimum interval between pool display attempts, including failures |
+
+V1/V2 pool views use the same cache beside the active account-storage file.
+The producer reserves an attempt before network I/O, shares in-flight work,
+and limits a sweep to two concurrent enabled-account usage requests. Countdown
+ticks, colors and names never bypass the budget. See the
+[user-facing request budget](../configuration.md#display-refresh-request-budget)
+for its scope and cache-only behavior.
 
 ### `quotaNotifications` object
 

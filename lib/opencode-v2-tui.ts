@@ -1,9 +1,29 @@
 import type { Plugin } from "@opencode/plugin/tui";
+import type { TextOptions } from "@opentui/core";
 import { createElement, spread } from "@opentui/solid";
 import { createSignal, onCleanup } from "solid-js";
 import { CodexStatusRpc } from "./opencode-v2-rpc.js";
+import { formatTuiAccountSidebar } from "./tui-account-sidebar.js";
+import { normalizeTuiColor, type TuiColor } from "./tui-color.js";
+import type { QuotaPromptTone } from "./tui-status.js";
 import { sanitizeDisplayBlock, sanitizeDisplayText } from "./ui/display-text.js";
 import { resolveUiGlyphs } from "./ui/theme.js";
+
+/** Native colors stay on the client and follow its current theme reactively. */
+function resolveV2Color(context: Plugin.Context, color: TuiColor, tone: QuotaPromptTone): TextOptions["fg"] {
+	const theme = context.theme;
+	const semantic = color === "auto"
+		? tone === "normal" ? "success"
+			: tone === "danger" ? "error"
+				: tone === "warning" || tone === "stale" ? "warning" : "muted"
+		: color;
+	if (semantic === "muted") return theme.text.muted ?? theme.text.base;
+	if (semantic === "accent") return theme.hue?.accent?.[500] ?? theme.text.base;
+	if (semantic === "success" || semantic === "warning" || semantic === "error" || semantic === "info") {
+		return theme.text.feedback?.[semantic]?.base ?? theme.text.base;
+	}
+	return semantic.startsWith("#") ? semantic : theme.text.base;
+}
 
 /** Register quota and account views; return a disposer for the V2 TUI slots. */
 export function setupV2Tui(context: Plugin.Context) {
@@ -11,6 +31,10 @@ export function setupV2Tui(context: Plugin.Context) {
 	const [accounts, setAccounts] = createSignal("Loading accounts…");
 	const [accountStorage, setAccountStorage] = createSignal<"project" | "global" | "unknown">("unknown");
 	const [showFor, setShowFor] = createSignal("always");
+	const [statusColor, setStatusColor] = createSignal<TuiColor>("default");
+	const [statusTone, setStatusTone] = createSignal<QuotaPromptTone>("unknown");
+	const [sidebarEnabled, setSidebarEnabled] = createSignal(true);
+	const [sidebarColor, setSidebarColor] = createSignal<TuiColor>("default");
 	const disposers = [context.ui.slot({
 		append: "app",
 		render: () => {
@@ -43,9 +67,19 @@ export function setupV2Tui(context: Plugin.Context) {
 					setText(sanitizeDisplayBlock(result.text, { maxLength: 1024 }) ?? "");
 					setShowFor(result.showFor);
 					setAccountStorage(result.accountStorage);
-					setAccounts(result.accounts.length ? result.accounts.map((account) =>
-						`${account.active ? glyphs.active : glyphs.inactive} ${account.index}. ${sanitizeDisplayText(account.label) ?? "unknown"}${account.enabled ? "" : " (disabled)"}`,
-					).join("\n") : "No Codex accounts in this pool.");
+					// Missing additive fields preserve older service behavior.
+					setStatusColor(normalizeTuiColor(result.statusColor, "default"));
+					setStatusTone(result.statusTone ?? "unknown");
+					setSidebarEnabled(result.sidebar?.enabled ?? true);
+					setSidebarColor(normalizeTuiColor(result.sidebar?.color, "default"));
+					setAccounts(formatTuiAccountSidebar(result.accounts, {
+						glyphs, quotaDisplay: result.quotaDisplay,
+						showQuota: result.sidebar?.showQuota ?? false,
+						showResetTimes: result.sidebar?.showResetTimes ?? false,
+						// Count down from cached timestamps on the existing RPC
+						// refresh, without another timer or any provider request.
+						now: Date.now(),
+					}));
 					details = sanitizeDisplayBlock(result.details, { maxLength: 2048 }) ?? "Quota unavailable.";
 				} catch {
 					if (!disposed) {
@@ -53,6 +87,7 @@ export function setupV2Tui(context: Plugin.Context) {
 						// against this TUI's own environment.
 						const fallback = resolveUiGlyphs("auto");
 						setText("limits ?");
+						setStatusTone("unknown");
 						setAccountStorage("unknown");
 						setAccounts(`Accounts unavailable ${fallback.emDash} retry shortly.`);
 						details = `Quota unavailable ${fallback.emDash} retry shortly.`;
@@ -159,7 +194,11 @@ export function setupV2Tui(context: Plugin.Context) {
 					}
 					return showFor() === "codex-models" && providerID && providerID !== "openai" ? "" : text();
 				},
-				get fg() { return context.theme.text.base; },
+				get fg() { return resolveV2Color(context, statusColor(), statusTone()); },
+				flexShrink: 1,
+				minWidth: 0,
+				wrapMode: "none",
+				truncate: true,
 			});
 			return element;
 		},
@@ -168,8 +207,10 @@ export function setupV2Tui(context: Plugin.Context) {
 		render: () => {
 			const element = createElement("text");
 			spread(element, {
-				get children() { return `\nCodex accounts\n${accounts()}\n/codex-accounts`; },
-				get fg() { return context.theme.text.base; },
+				get children() { return sidebarEnabled() ? `\nCodex accounts\n${accounts()}\n/codex-accounts` : ""; },
+				get visible() { return sidebarEnabled(); },
+				get fg() { return resolveV2Color(context, sidebarColor(), statusTone()); },
+				flexShrink: 0,
 			});
 			return element;
 		},

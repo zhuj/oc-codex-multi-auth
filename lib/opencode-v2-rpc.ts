@@ -12,7 +12,25 @@ export const CodexStatusRpc = Rpc.define({
 				// Configured glyph mode, sent unresolved so a remote TUI answers
 				// `auto` against ITS environment, not the service's.
 				glyphMode: z.enum(["ascii", "unicode", "auto"]).optional(),
-				accounts: z.array(z.object({ index: z.number().int(), label: z.string(), active: z.boolean(), enabled: z.boolean() })),
+				statusColor: z.string().optional(),
+				statusTone: z.enum(["normal", "warning", "danger", "stale", "unknown"]).optional(),
+				quotaDisplay: z.enum(["free", "used"]).optional(),
+				sidebar: z.object({
+					enabled: z.boolean(), showQuota: z.boolean(), showResetTimes: z.boolean(), color: z.string(),
+				}).optional(),
+				accounts: z.array(z.object({
+					index: z.number().int(), label: z.string(), active: z.boolean(), enabled: z.boolean(),
+					shortName: z.string().optional(),
+					displayName: z.string().optional(),
+					// Display-only data: the remote TUI never receives account IDs or credentials.
+					quota: z.object({
+						limits: z.array(z.object({
+							label: z.string(), leftPercent: z.number().nullable(), usedPercent: z.number().optional(),
+							windowMinutes: z.number().optional(), resetAtMs: z.number().optional(),
+						})),
+						fetchedAt: z.number().optional(), stale: z.boolean(), readFailed: z.boolean().optional(),
+					}).optional(),
+				})),
 			}),
 		},
 	},

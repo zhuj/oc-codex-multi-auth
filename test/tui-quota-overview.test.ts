@@ -34,6 +34,7 @@ import {
 import {
 	fetchTuiQuotaOverview,
 	mergeOverviewWithLatestAccount,
+	resetTuiQuotaOverviewThrottle,
 	toOverviewAccount,
 	toQuotaOverviewAccounts,
 } from "../lib/tui-quota-overview.js";
@@ -114,11 +115,13 @@ describe("overview cache round trip", () => {
 
 	beforeEach(async () => {
 		dir = await mkdtemp(join(tmpdir(), "oc-overview-"));
+		resetTuiQuotaOverviewThrottle();
 		vi.mocked(ensureCodexUsageAccessToken).mockReset();
 		vi.mocked(fetchCodexUsage).mockReset();
 	});
 
 	afterEach(async () => {
+		resetTuiQuotaOverviewThrottle();
 		await rm(dir, { recursive: true, force: true });
 	});
 

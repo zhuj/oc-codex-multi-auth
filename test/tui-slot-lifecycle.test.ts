@@ -75,6 +75,46 @@ afterEach(() => {
 });
 
 describe("TUI status slot lifecycle", () => {
+	it("hot reloads aliases and native colors without restarting the quota controller or fetching usage", async () => {
+		vi.useFakeTimers();
+		const dir = await mkdtemp(join(tmpdir(), "tui-alias-reload-"));
+		vi.stubEnv("OPENCODE_STATE_DIR", dir);
+		const account = { accountId: "FAKE_ACCOUNT", accountUserId: "FAKE_MEMBER", refreshToken: "FAKE_REFRESH", email: "member@example.test", addedAt: 1, lastUsed: 1 };
+		vi.spyOn(storage, "loadAccounts").mockResolvedValue({ version: 3, activeIndex: 0, accounts: [account] });
+		let currentConfig = { accountShortNames: { "seat:[\"FAKE_ACCOUNT\",\"FAKE_MEMBER\"]": "work" }, quotaStatus: { activeAccountName: "short" as const, color: "accent" } };
+		vi.spyOn(config, "loadPluginConfig").mockImplementation(() => currentConfig);
+		const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected provider request"));
+		const snapshot = createTuiQuotaSnapshot({ fingerprint: createUsageAccountFingerprint(account), source: "headers", accountIndex: 1, accountCount: 1, limits: [{ label: "5h", leftPercent: 80 }] });
+		try {
+			await writeTuiQuotaSnapshot(snapshot, getTuiQuotaCachePath(dir));
+			const first = Promise.withResolvers<void>();
+			mocks.onSignal = (value) => { if (value && typeof value === "object" && "type" in value && value.type === "ready") first.resolve(); };
+			const h = harness(dir);
+			const theme = { accent: "accent-initial" };
+			Object.assign(h.api, { theme: { current: theme } });
+			const events = vi.spyOn(h.api.event, "on");
+			await tuiModule.tui(h.api, undefined, {} as TuiPluginMeta);
+			const node = h.plugin()?.slots["session_prompt_right"]?.({}, { session_id: "FAKE_SESSION" });
+			await first.promise;
+			if (!node || typeof node !== "object" || !("content" in node) || !("fg" in node)) throw new Error("missing status node");
+			expect(node.content).toContain("[work]");
+			expect(node.content).not.toContain("@");
+			expect(node.fg).toBe("accent-initial");
+			theme.accent = "accent-updated";
+			expect(node.fg).toBe("accent-updated");
+			const registered = events.mock.calls.length;
+			currentConfig = { accountShortNames: { "seat:[\"FAKE_ACCOUNT\",\"FAKE_MEMBER\"]": "home" }, quotaStatus: { activeAccountName: "short", color: "#123abc" } };
+			await vi.advanceTimersByTimeAsync(15_000);
+			expect(node.content).toContain("[home]");
+			expect(node.fg).toBe("#123abc");
+			expect(events).toHaveBeenCalledTimes(registered);
+			expect(fetch).not.toHaveBeenCalled();
+		} finally {
+			for (const cleanup of mocks.cleanups.splice(0)) cleanup();
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it.each([
 		["same account and scope", false, false, 1],
 		["different accounts", true, false, 2],
@@ -133,7 +173,7 @@ describe("TUI status slot lifecycle", () => {
 			for (const [index, node] of nodes.entries()) {
 				if (!node || typeof node !== "object" || !("content" in node)) throw new Error("missing status node");
 				expect(node.content).toContain(differentAccounts && index === 1 ? "50%" : "80%");
-				expect(node.content).toContain(differentAccounts && index === 1 ? "second@example.com" : "first@example.com");
+				expect(node.content).toContain(differentAccounts && index === 1 ? "[A2]" : "[A1]");
 			}
 		} finally {
 			release.resolve();
@@ -169,7 +209,7 @@ describe("TUI status slot lifecycle", () => {
 			await updated.promise;
 			if (!node || typeof node !== "object" || !("content" in node)) throw new Error("missing status node");
 			expect(node.content).toContain("50%");
-			expect(node.content).toContain("bound@example.com");
+			expect(node.content).toContain("[A1]");
 		} finally {
 			for (const cleanup of mocks.cleanups.splice(0)) cleanup();
 			await rm(dir, { recursive: true, force: true });
@@ -189,7 +229,7 @@ describe("TUI status slot lifecycle", () => {
 		const mount = async (prefix: string, rowWidth?: number): Promise<string> => {
 			vi.useFakeTimers();
 			vi.setSystemTime(now);
-			vi.spyOn(config, "getQuotaStatus").mockReturnValue({ ...config.getQuotaStatus({}), prefix });
+			vi.spyOn(config, "getQuotaStatus").mockReturnValue({ ...config.getQuotaStatus({}), activeAccountName: "full", prefix });
 			vi.spyOn(status, "formatPromptStatusText").mockImplementation((params) => formatPromptStatusText({ ...params, quota: served, glyphMode: "unicode" }));
 			const h = harness();
 			await tuiModule.tui(h.api, undefined, {} as TuiPluginMeta);
@@ -236,9 +276,9 @@ describe("TUI status slot lifecycle", () => {
 					if (!node || typeof node !== "object" || !("content" in node)) throw new Error("missing status node");
 					return node.content;
 				});
-				expect(contents[0]).toContain("first@example.test");
+				expect(contents[0]).toContain("[A1]");
 				expect(contents[0]).toContain("80%");
-				expect(contents[1]).toContain("second@example.test");
+				expect(contents[1]).toContain("[A2]");
 				expect(contents[1]).toContain("50%");
 				expect(contents[2]).toBe(contents[1]);
 			});

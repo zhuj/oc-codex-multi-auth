@@ -29,6 +29,7 @@
  */
 
 import { maskEmailForDisplay } from "./account-display.js";
+import { sanitizeAccountShortName } from "./account-short-name.js";
 import {
 	creditsSortValue,
 	formatCreditsBalance,
@@ -83,6 +84,8 @@ export type QuotaOverviewAccount = {
 	 * {@link resolveAccountName} rather than printing it directly.
 	 */
 	label?: string;
+	/** Configured short alias, resolved from current pool metadata at render time. */
+	shortName?: string;
 	/** ChatGPT email, used by the reset-credit line and as a label fallback. */
 	email?: string;
 	/** `plan_type` as reported by `/wham/usage`, used for the weighting only. */
@@ -108,6 +111,8 @@ export type QuotaOverviewLayout =
 
 /** What identifies an account on the line. */
 export type QuotaOverviewNames =
+	/** Configured alias in brackets, with a non-sensitive ordinal fallback. */
+	| "short"
 	/** `#1`, the number `codex-switch` takes. */
 	| "number"
 	/** The account's label, or its email's local part: `damian`, `work`. */
@@ -351,6 +356,7 @@ export function resolveAccountName(
 	maskEmail = false,
 ): string | undefined {
 	if (names === "none") return undefined;
+	if (names === "short") return `[${sanitizeAccountShortName(account.shortName) ?? `A${account.index}`}]`;
 	if (names === "number") return `#${account.index}`;
 	// Labels and emails come from account storage and `/wham` responses —
 	// untrusted text that is interpolated straight onto the status line, so
@@ -585,7 +591,7 @@ function annotationRungs(
 		rungs.push(current);
 	};
 	if (current.multipliers) step({ multipliers: false });
-	if (current.names === "label") step({ names: "number" });
+	if (current.names === "label" || current.names === "short") step({ names: "number" });
 	if (current.resetCredits) step({ resetCredits: false });
 	if (current.resetTimes === "always") step({ resetTimes: "low" });
 	if (current.resetTimes !== "never") step({ resetTimes: "never" });
@@ -768,6 +774,11 @@ export function formatQuotaResetsCandidates(
 	const identities: Array<Array<string | undefined>> =
 		names === "none"
 			? [unnamed]
+			: names === "short"
+				? [
+						redeemable.map((account) => resolveAccountName(account, "short", maskEmail)),
+						redeemable.map((account) => resolveAccountName(account, "number", maskEmail)),
+					]
 			: names === "number"
 				? [
 						redeemable.map((account) =>
@@ -876,6 +887,11 @@ export function formatQuotaCreditsCandidates(
 	const identities: Array<Array<string | undefined>> =
 		names === "none"
 			? []
+			: names === "short"
+				? [
+						holders.map((account) => resolveAccountName(account, "short", maskEmail)),
+						holders.map((account) => resolveAccountName(account, "number", maskEmail)),
+					]
 			: names === "number"
 				? [holders.map((account) => resolveAccountName(account, "number", maskEmail))]
 				: [

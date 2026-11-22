@@ -1,5 +1,6 @@
 import type { Config } from "@opencode-ai/sdk/v2";
 import { maskEmailForDisplay } from "./account-display.js";
+import { sanitizeAccountShortName, type AccountNameMode } from "./account-short-name.js";
 import { getEffortSuffix } from "./request/helpers/effort-suffix.js";
 import { formatPlanType } from "./auth/plan-tier.js";
 import {
@@ -62,6 +63,8 @@ export type CompactQuotaStatus =
 			accountCount?: number;
 			accountEmail?: string;
 			accountLabel?: string;
+			/** Configured display alias; never persisted in the quota cache. */
+			accountShortName?: string;
 			planType?: string;
 			activeLimit?: number;
 	  };
@@ -298,7 +301,7 @@ function formatAccountEmail(
  * Every token holding an `@` is masked, so no address survives whatever joins
  * them.
  */
-function maskEmailsInText(
+export function maskEmailsInText(
 	value: string | undefined,
 	maskEmail: boolean,
 ): string | undefined {
@@ -343,14 +346,24 @@ function formatQuotaLimit(
 function formatAccountHints(
 	quota: CompactQuotaStatus,
 	maskEmail = false,
+	nameMode: AccountNameMode = "full",
+	accountHint?: { index: number; shortName?: string },
 ): string[] {
-	if (quota.type !== "ready") return [];
+	if (nameMode === "none") return [];
+	const index = accountHint?.index ?? (quota.type === "ready" ? quota.accountIndex : undefined);
 	if (
-		typeof quota.accountIndex !== "number" ||
-		!Number.isFinite(quota.accountIndex)
+		typeof index !== "number" ||
+		!Number.isFinite(index)
 	) {
 		return [];
 	}
+	if (nameMode === "short" || nameMode === "number") {
+		const fallback = `A${Math.max(1, Math.trunc(index))}`;
+		const configured = accountHint?.shortName ?? (quota.type === "ready" ? quota.accountShortName : undefined);
+		const name = nameMode === "short" ? sanitizeAccountShortName(configured) ?? fallback : fallback;
+		return [`[${name}]`];
+	}
+	if (quota.type !== "ready") return [];
 	if (
 		typeof quota.accountCount === "number" &&
 		Number.isFinite(quota.accountCount) &&
@@ -462,6 +475,10 @@ export function formatPromptStatusText(params: {
 	/** Columns of the budget already spent, e.g. on `quotaStatus.prefix`. */
 	reservedChars?: number;
 	maskEmail?: boolean;
+	/** Omitted retains the legacy full-identity format for existing callers. */
+	activeAccountName?: AccountNameMode;
+	/** Known pool identity remains usable when no quota reading is available. */
+	accountHint?: { index: number; shortName?: string };
 	quotaDisplay?: QuotaDisplayMode;
 	/** `codexTuiGlyphMode`; `auto` resolves against the environment. */
 	glyphMode?: UiGlyphMode;
@@ -469,7 +486,7 @@ export function formatPromptStatusText(params: {
 	const variant = params.variant;
 	const mode = params.quotaDisplay ?? DEFAULT_QUOTA_DISPLAY_MODE;
 	const separator = statusSeparator(params.glyphMode);
-	const accountForms = formatAccountHints(params.quota, params.maskEmail);
+	const accountForms = formatAccountHints(params.quota, params.maskEmail, params.activeAccountName, params.accountHint);
 	const quotaParts = formatQuotaParts(params.quota, true, mode);
 	const quotaPartsWithoutReset = formatQuotaParts(params.quota, false, mode);
 	const quota = quotaParts.length > 0
@@ -486,13 +503,24 @@ export function formatPromptStatusText(params: {
 		accountForms.map((form) =>
 			[prefix, form, rest].filter(Boolean).join(separator),
 		);
-	const candidates = [
+	const namedCandidates = [
 		...withAccount(quota),
 		...withAccount(primaryQuota),
-		quota,
-		primaryQuota,
+	];
+	const namedWithoutReset = [
 		...withAccount(quotaWithoutReset),
 		...withAccount(primaryQuotaWithoutReset),
+	];
+	// Short names are the requested identity, so drop the reset annotation
+	// before dropping that identity. Preserve the older full-email ladder for
+	// callers explicitly opting into it (and for legacy formatter callers).
+	const compactName = params.activeAccountName === "short" || params.activeAccountName === "number";
+	const candidates = [
+		...namedCandidates,
+		...(compactName ? namedWithoutReset : []),
+		quota,
+		primaryQuota,
+		...(!compactName ? namedWithoutReset : []),
 		quotaWithoutReset,
 		primaryQuotaWithoutReset,
 		...withAccount(quota, variant),

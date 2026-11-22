@@ -26,6 +26,7 @@ vi.mock("../lib/codex-usage.js", async (importOriginal) => {
 });
 
 import { loadAccounts } from "../lib/storage.js";
+import * as config from "../lib/config.js";
 import {
 	createTuiQuotaSnapshot,
 	getTuiQuotaCachePath,
@@ -96,8 +97,24 @@ describe("refreshQuotaStatusInner", () => {
 	afterEach(async () => {
 		await rm(stateDir, { recursive: true, force: true });
 		vi.clearAllMocks();
+		vi.restoreAllMocks();
 		vi.useRealTimers();
 		vi.unstubAllEnvs();
+	});
+
+	it("uses only cached data when display quota refresh is disabled", async () => {
+		vi.spyOn(config, "loadPluginConfig").mockReturnValue({ quotaRefresh: { enabled: false } });
+		const api = createFakeApi(stateDir);
+		const account = storage.accounts[0]!;
+		const cached = createTuiQuotaSnapshot({
+			fingerprint: createUsageAccountFingerprint(account), source: "usage",
+			accountIndex: 1, fetchedAt: Date.now() - 86_400_000,
+			limits: [{ label: "5h", leftPercent: 20 }],
+		});
+		await writeTuiQuotaSnapshot(cached, getTuiQuotaCachePath(stateDir));
+		expect(await refreshQuotaStatusInner(api)).toMatchObject({ type: "ready", stale: true, limits: [{ leftPercent: 20 }] });
+		expect(ensureCodexUsageAccessToken).not.toHaveBeenCalled();
+		expect(fetchCodexUsage).not.toHaveBeenCalled();
 	});
 
 	it("keeps each session's account and quota when another session updates the shared cache", async () => {

@@ -401,6 +401,17 @@ describe("runtime documentation parity", () => {
 		expect(PluginConfigSchema.safeParse({ quotaStatus: { prefix: "x".repeat(maximum + 1) } }).success).toBe(false);
 	});
 
+	it("keeps the short-name, color and sidebar example accepted without stripped fields", () => {
+		const section = readRepoFile("docs/configuration.md").split("#### Short names, colors and the account sidebar")[1];
+		const example = section?.match(/```json\n([\s\S]*?)\n```/)?.[1];
+		expect(example).toBeDefined();
+		const config: unknown = JSON.parse(example ?? "null");
+		expect(PluginConfigSchema.parse(config)).toEqual(config);
+		for (const field of ["accountShortNames", "quotaSidebar", "quotaRefresh", "activeAccountName", "showResetTimes"]) {
+			expect(readRepoFile("docs/development/CONFIG_FIELDS.md")).toContain(`\`${field}\``);
+		}
+	});
+
 	it("keeps codex-help advertised topics aligned with implemented sections", () => {
 		const helpSource = readRepoFile("lib/tools/codex-help.ts");
 		const descriptionMatch = helpSource.match(/Optional topic: ([^.]+)\./);

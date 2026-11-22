@@ -754,6 +754,8 @@ describe("getQuotaStatus", () => {
 	it("shows each account with its reset once the pool view is on", () => {
 		expect(getQuotaStatus({ quotaStatus: { mode: "overview" } })).toEqual({
 			screens: ["overview"],
+			activeAccountName: "short",
+			color: "auto",
 			rotateMs: 5_000,
 			resetsMinUsedPercent: 100,
 			layout: "accounts",
@@ -791,6 +793,8 @@ describe("getQuotaStatus", () => {
 			}),
 		).toEqual({
 			screens: ["overview", "resets"],
+			activeAccountName: "short",
+			color: "auto",
 			rotateMs: 8_000,
 			resetsMinUsedPercent: 100,
 			layout: "aggregate",

@@ -11,6 +11,8 @@ import {
 } from "./request/retry-budget.js";
 import { logWarn } from "./logger.js";
 import { sanitizeDisplayText } from "./ui/display-text.js";
+import type { AccountNameMode } from "./account-short-name.js";
+import { normalizeTuiColor, type TuiColor } from "./tui-color.js";
 import {
 	DEFAULT_QUOTA_DISPLAY_MODE,
 	QUOTA_DISPLAY_MODES,
@@ -1472,8 +1474,10 @@ const QUOTA_OVERVIEW_LAYOUTS: readonly QuotaOverviewLayout[] = [
 const QUOTA_OVERVIEW_NAMES: readonly QuotaOverviewNames[] = [
 	"number",
 	"label",
+	"short",
 	"none",
 ];
+const ACCOUNT_NAME_MODES: readonly AccountNameMode[] = ["short", "full", "number", "none"];
 const QUOTA_OVERVIEW_ORDERS: readonly QuotaOverviewOrder[] = [
 	"number",
 	"most-used",
@@ -1503,8 +1507,12 @@ export interface QuotaStatusConfig {
 	rotateMs: number;
 	/** Per-account segments, grouped percentages, a count, or only the total. */
 	layout: QuotaOverviewLayout;
-	/** `#1`, the account's own name, or nothing at all. */
+	/** Pool identity: `#1`, a label, a configured `[short]` name, or nothing. */
 	accountNames: QuotaOverviewNames;
+	/** Active footer identity; short aliases never fall back to an email. */
+	activeAccountName: AccountNameMode;
+	/** A semantic theme color or a validated RGB color. */
+	color: TuiColor;
 	order: QuotaOverviewOrder;
 	/** `5x` / `20x` plan allotment badges. */
 	multipliers: boolean;
@@ -1558,11 +1566,10 @@ function resolveQuotaStatusScreens(value: unknown): QuotaStatusScreen[] {
 /**
  * How the prompt status line describes the account pool.
  *
- * Every default here is the behaviour an install already has, so adding
- * `"mode": "overview"` and nothing else changes the line's subject without
- * changing anything about how it is written. The switches only apply to the
- * pool screens; they are resolved unconditionally anyway so a reader of this
- * config sees what `overview` would render without having to enable it first.
+ * Existing pool layout defaults are preserved. The active footer uses compact
+ * account aliases by default, with a full-name compatibility option. Pool
+ * preferences are resolved even while the active screen is selected, so
+ * switching modes does not require a separate configuration shape.
  *
  * Presentation preference belongs to a person rather than to a shell, so none
  * of this is overridable by environment variable - the config file is the only
@@ -1594,6 +1601,8 @@ export function getQuotaStatus(pluginConfig: PluginConfig): QuotaStatusConfig {
 			QUOTA_OVERVIEW_NAMES,
 			"number",
 		),
+		activeAccountName: pickEnum(config?.activeAccountName, ACCOUNT_NAME_MODES, "short"),
+		color: normalizeTuiColor(config?.color),
 		order: pickEnum(config?.order, QUOTA_OVERVIEW_ORDERS, "number"),
 		multipliers: config?.multipliers ?? false,
 		allotment: config?.allotment ?? false,
@@ -1622,5 +1631,42 @@ export function getQuotaStatus(pluginConfig: PluginConfig): QuotaStatusConfig {
 		showFor: pickEnum(config?.showFor, QUOTA_STATUS_AUDIENCES, "always"),
 		// Sanitizing trims, which would glue the prefix to the line it introduces.
 		prefix: prefix && /\s$/.test(rawPrefix) && !/\s$/.test(prefix) ? `${prefix} ` : prefix,
+	};
+}
+
+/** Aliases are resolved and display-sanitized against the current account pool. */
+export function getAccountShortNames(pluginConfig: PluginConfig): Record<string, string> {
+	return pluginConfig.accountShortNames ?? {};
+}
+
+export interface QuotaSidebarConfig {
+	enabled: boolean;
+	accountNames: AccountNameMode;
+	showQuota: boolean;
+	showResetTimes: boolean;
+	color: TuiColor;
+}
+
+/** V2's account sidebar uses the same cached pool readings as the footer. */
+export function getQuotaSidebar(pluginConfig: PluginConfig): QuotaSidebarConfig {
+	const config = pluginConfig.quotaSidebar;
+	return {
+		enabled: config?.enabled ?? true,
+		accountNames: pickEnum(config?.accountNames, ACCOUNT_NAME_MODES, "short"),
+		showQuota: config?.showQuota ?? true,
+		showResetTimes: config?.showResetTimes ?? true,
+		color: normalizeTuiColor(config?.color, "default"),
+	};
+}
+
+/** Background pool display reads; independent of the existing quota monitor. */
+export function getQuotaRefresh(pluginConfig: PluginConfig): { enabled: boolean; intervalMs: number } {
+	const config = pluginConfig.quotaRefresh;
+	const value = config?.intervalMs;
+	return {
+		enabled: config?.enabled ?? true,
+		intervalMs: typeof value === "number" && Number.isFinite(value)
+			? Math.min(MAX_CONFIG_DURATION_MS, Math.max(600_000, Math.trunc(value)))
+			: 600_000,
 	};
 }

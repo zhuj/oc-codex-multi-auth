@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { isAbsolute } from "node:path";
 import { MODEL_FAMILIES, type ModelFamily } from "./prompts/codex.js";
+import { normalizeTuiColor } from "./tui-color.js";
 
 // ============================================================================
 // Plugin Configuration Schema
@@ -32,6 +33,20 @@ export const PluginConfigSchema = z.object({
 	maskEmail: z.boolean().optional(),
 	maskEmailInQuotaDetails: z.boolean().optional(),
 	quotaDisplay: z.enum(["free", "used"]).optional(),
+	// Presentation mistakes should not discard unrelated routing/auth settings.
+	accountShortNames: z.record(z.string(), z.string().catch("")).catch({}).optional(),
+	quotaSidebar: z.object({
+		enabled: z.boolean().optional(),
+		accountNames: z.enum(["short", "full", "number", "none"]).optional(),
+		showQuota: z.boolean().optional(),
+		showResetTimes: z.boolean().optional(),
+		color: z.string().transform((value) => normalizeTuiColor(value, "default")).catch("default").optional(),
+	}).optional(),
+	quotaRefresh: z.object({
+		enabled: z.boolean().optional(),
+		// A lower value must not turn two-second local status RPCs into API polls.
+		intervalMs: z.number().finite().min(0).max(MAX_CONFIG_DURATION_MS).optional(),
+	}).optional(),
 	beginnerSafeMode: z.boolean().optional(),
 	fastSession: z.boolean().optional(),
 	fastSessionStrategy: z.enum(["hybrid", "always"]).optional(),
@@ -105,7 +120,9 @@ export const PluginConfigSchema = z.object({
 		]).optional(),
 		rotateMs: z.number().min(1_000).max(MAX_CONFIG_DURATION_MS).optional(),
 		layout: z.enum(["accounts", "aggregate", "count", "total"]).optional(),
-		accountNames: z.enum(["number", "label", "none"]).optional(),
+		accountNames: z.enum(["number", "label", "short", "none"]).optional(),
+		activeAccountName: z.enum(["short", "full", "number", "none"]).optional(),
+		color: z.string().transform((value) => normalizeTuiColor(value)).catch("auto").optional(),
 		order: z.enum([
 			"number",
 			"most-used",

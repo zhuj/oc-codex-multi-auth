@@ -289,6 +289,9 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `maskEmailInQuotaDetails` | `CODEX_TUI_MASK_EMAIL_DETAILS` | boolean | `false` | — | also mask the active account email in the quota details dialog (needs `maskEmail`) |
 | `quotaDisplay` | `CODEX_AUTH_QUOTA_DISPLAY` | `free` \| `used` | `free` | — | word every quota percentage as headroom (`88% left`) or consumption (`12% used`); presentation only — thresholds, exhaustion, and JSON fields stay keyed on remaining. See [Quota percentage display](#quota-percentage-display) |
 | `quotaStatus` | (file only) | object | see below | — | shape of the prompt quota status line — see [Pool-wide quota status](#pool-wide-quota-status) |
+| `accountShortNames` | (file only) | account key → string | `{}` | 16 display columns per alias | compact `[work]` account names; see [Short names, colors and the account sidebar](#short-names-colors-and-the-account-sidebar) |
+| `quotaSidebar` | (file only) | object | see below | — | OpenCode V2 account list, quota windows and reset countdowns |
+| `quotaRefresh` | (file only) | object | `{enabled: true, intervalMs: 600000}` | interval clamped to at least 600000 ms | shared background pool reads for the TUI; separate from the existing quota-notification/credit-protection monitor |
 | `quotaNotifications` | — | object | see below | — | macOS quota alerts + the credit-protection poll — see [Quota notifications](#quota-notifications) |
 | `limitsSort` | (file only) | object | `{by: "account", direction: "asc"}` | `by`: `account`/`usage`/`reset`; `direction`: `asc`/`desc` | default account order for the standalone `limits` CLI; `--sort`/`--asc`/`--desc` override. See [What `limits` reports](tools-and-cli.md#what-limits-reports) |
 | `toastDurationMs` | `CODEX_AUTH_TOAST_DURATION_MS` | number (ms) | `5000` | 1000–86400000 | how long toast notifications stay visible |
@@ -302,7 +305,9 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `quotaStatus.mode` | (file only) | `active` \| `overview` \| `resets` \| `credits`, or array | `active` | unknown names dropped | which screens to show; a list alternates every `rotateMs` |
 | `quotaStatus.rotateMs` | (file only) | number (ms) | `5000` | 1000–86400000 | per-screen dwell when `mode` is a list |
 | `quotaStatus.layout` | (file only) | `accounts` \| `aggregate` \| `count` \| `total` | `accounts` | — | per-account segments, grouped percentages, a count, or only the pool total |
-| `quotaStatus.accountNames` | (file only) | `number` \| `label` \| `none` | `number` | — | `#1`, the `codex-label`/email local part, or nothing |
+| `quotaStatus.accountNames` | (file only) | `number` \| `label` \| `short` \| `none` | `number` | — | pool screens: `#1`, the `codex-label`/email local part, configured `[short]`, or nothing |
+| `quotaStatus.activeAccountName` | (file only) | `short` \| `full` \| `number` \| `none` | `short` | — | active footer: `[work]`, the previous email hint (respecting masking), `[A1]`, or no account hint |
+| `quotaStatus.color` | (file only) | semantic name or `#RRGGBB` | `auto` | validated colors only | footer foreground; native theme colors in OpenCode V1 and V2 |
 | `quotaStatus.order` | (file only) | `number` \| `most-used` \| `least-used` \| `renewing-earliest` \| `renewing-latest` | `number` | — | account segment order |
 | `quotaStatus.multipliers` | (file only) | boolean | `false` | — | `5x`/`20x` plan allotment badges |
 | `quotaStatus.allotment` | (file only) | boolean | `false` | — | `24% of 26x`: the weighted pool total in 1x seats |
@@ -314,6 +319,112 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `quotaStatus.rows` | (file only) | integer | `1` | 1–4 | row ceiling for the line — a ceiling, not a height |
 | `quotaStatus.showFor` | (file only) | `always` \| `codex-models` | `always` | — | `codex-models` hides the line unless the session runs a model this plugin routes |
 | `quotaStatus.prefix` | (file only) | string | `""` | 0–40 characters | text before the first row (for example `"OpenAI "`); later rows indent under it. Its columns come out of the line's width budget, and the line hides when none are left. Terminal control characters are stripped. OpenCode V1 and V2 |
+
+#### Short names, colors and the account sidebar
+
+Add these fields to `~/.opencode/openai-codex-auth-config.json`, merging them
+with your existing settings. The example identities are placeholders:
+
+```json
+{
+  "accountShortNames": {
+    "work@example.com": "work",
+    "personal@example.com": "home"
+  },
+  "quotaStatus": {
+    "activeAccountName": "short",
+    "accountNames": "short",
+    "color": "auto"
+  },
+  "quotaSidebar": {
+    "enabled": true,
+    "accountNames": "short",
+    "showQuota": true,
+    "showResetTimes": true,
+    "color": "default"
+  },
+  "quotaRefresh": {
+    "enabled": true,
+    "intervalMs": 600000
+  }
+}
+```
+
+The active footer shows a bounded name such as `[work]`, including for a
+single-account pool. Unnamed accounts use `[A1]`, `[A2]`, and so on; their
+emails are not used as implicit short names. Aliases belong in the config,
+without brackets. Terminal escapes, control characters, bidi controls and
+brackets are removed, and names are truncated to 16 terminal columns without
+splitting Unicode graphemes. An alias is explicit display text and is not
+email-masked. Use a non-sensitive nickname when masking identities.
+
+Alias lookup uses the exact stable Business-seat key first (for example
+`seat:["FAKE_ACCOUNT_ID","FAKE_USER_ID"]`), then the account ID, then the
+account's exact email. A seat-specific alias therefore overrides a shared
+workspace alias. Email keys are convenient, but cannot distinguish two seats
+with the same email; use a seat key for those. Configured aliases follow their
+account when the pool is reordered. The `A1` fallback follows the current
+one-based account number.
+
+OpenCode 2.3+ supports native foreground colors in both the prompt footer and
+the account sidebar. This implementation also uses the common V2 API already
+present in the package's supported SDK. Set `quotaStatus.color` or
+`quotaSidebar.color` to `auto`, `default`, `muted`, `accent`, `success`,
+`warning`, `error`, `info`, or an opaque six-digit hex color such as
+`"#80bfff"`. `auto` follows quota severity; `default` follows the host's normal
+text color. Semantic choices follow theme changes, while hex colors stay
+fixed. Invalid colors fall back to the default for that surface. These are
+native `fg` values, so ANSI escape sequences are neither needed nor accepted.
+`codexTuiColorProfile` continues to control the standalone CLI's terminal
+palette; it is separate from these host TUI foreground settings.
+
+| Sidebar field | Default | Effect |
+| --- | --- | --- |
+| `quotaSidebar.enabled` | `true` | show the OpenCode V2 sidebar section; `/codex-accounts` remains available when hidden |
+| `quotaSidebar.accountNames` | `short` | `short`: `[work]`; `full`: label/email with email masking; `number`: `[A1]`; `none`: omit the name (the account index remains) |
+| `quotaSidebar.showQuota` | `true` | show each reported 5-hour and weekly window's percentage, following `quotaDisplay` |
+| `quotaSidebar.showResetTimes` | `true` | show a reset countdown alongside each window when the backend reports a timestamp; works independently of `showQuota` |
+| `quotaSidebar.color` | `default` | foreground color using the same color choices as `quotaStatus.color` |
+
+All accounts remain listed. Disabled accounts use an existing cached reading
+when available and are not queried by the display. Missing readings say
+`quota unavailable`; missing percentages stay unknown. Old readings are
+marked stale, and credential failures are marked as failed refreshes. The
+sidebar does not invent a reset time for an untouched rolling window. Once
+a known timestamp passes it says `reset due`; it does not assume quota has
+refilled until a later observation arrives.
+
+#### Display refresh request budget
+
+The footer, sidebar and account dialog reuse one pool producer. The V2 TUI's
+two-second status RPC refresh is a request to the OpenCode service, not a
+ChatGPT usage poll. Names, colors, layout changes and countdown ticks do not
+invalidate quota data or start their own provider polling loops.
+
+`quotaRefresh.intervalMs` defaults to **600000 ms (10 minutes)**. Values below
+that are clamped to ten minutes; the maximum is one day. Each sweep requests
+`/wham/usage` once per distinct enabled account, with concurrency limited to
+two. Successful and failed attempts both consume the interval. V1 and V2
+pool views share a cache and a credential-free attempt reservation beside
+the active account-storage file, so processes using that same pool share
+the budget. If coordination fails, the display keeps cached data instead of
+making an uncoordinated request. Recent matching quota response headers are
+also reused without an additional request.
+
+For **A** distinct enabled accounts, the default display sweep is at most
+**A usage GETs per ten-minute interval**, about **6A per hour** in steady
+state. This is half the previous V2 pool refresh frequency. The existing
+quota-notification/credit-protection monitor is independent (default
+30-minute interval), as are normal model requests, explicit account tools,
+and OAuth refreshes required for expired credentials.
+
+Set `"quotaRefresh": {"enabled": false}` for cache-only display: the V2 pool
+view and V1 quota display read available cached/header data without making
+usage or OAuth requests of their own. It does not disable the independent
+quota monitor. With no cached observations, some account quotas will remain
+unavailable until another existing request path supplies them. Hiding the
+sidebar or turning both quota/reset fields off also stops it from requesting
+pool data; the configured footer screens may still need that same data.
 
 #### `quotaNotifications` object
 
@@ -335,10 +446,12 @@ timeout fields, rotation and model pools, unsupported-model policy, and
 `perProjectAccounts` (switching scope waits for in-flight requests to drain,
 then moves the active pool — the other scope's files are left in place).
 
-The prompt status line polls `quotaStatus`, `quotaDisplay`, `maskEmail`, and
-`maskEmailInQuotaDetails`, and the UI runtime (`codexTuiV2`, color profile,
-glyphs) re-resolves per command render — display edits take effect within a
-couple of seconds, no restart.
+The prompt status line polls `quotaStatus`, `accountShortNames`, `quotaRefresh`,
+`quotaDisplay`, `maskEmail`, and `maskEmailInQuotaDetails`. V2 also reads
+`quotaSidebar`. Display edits apply on the next local refresh (normally two
+seconds in V2; up to fifteen seconds for V1 config polling), without restarting
+the plugin or forcing an upstream quota refresh. The UI runtime
+(`codexTuiV2`, color profile, glyphs) re-resolves per command render.
 
 Still startup-bound:
 
@@ -584,7 +697,7 @@ there is no environment override for any field in it.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `layout` | `accounts` | `accounts` gives one segment per account; `aggregate` collapses accounts sharing a percentage; `count` gives `24%: 3 accounts`; `total` shows only the pool percentage plus enabled extras |
-| `accountNames` | `number` | `number` gives `#1`; `label` gives the `codex-label` label or the email's local part; `none` drops the name |
+| `accountNames` | `number` | `number` gives `#1`; `label` gives the `codex-label` label or the email's local part; `short` gives a configured `[work]` alias; `none` drops the name |
 | `order` | `number` | `number`, `most-used`, `least-used`, `renewing-earliest`, `renewing-latest` |
 | `multipliers` | `false` | `5x` / `20x` plan allotment badges |
 | `allotment` | `false` | `24% of 26x` — what the pool the percentage is averaged over adds up to |
