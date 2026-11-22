@@ -407,7 +407,8 @@ describe("runtime documentation parity", () => {
 		expect(example).toBeDefined();
 		const config: unknown = JSON.parse(example ?? "null");
 		expect(PluginConfigSchema.parse(config)).toEqual(config);
-		for (const field of ["accountShortNames", "quotaSidebar", "quotaRefresh", "activeAccountName", "showResetTimes"]) {
+		expect(section).toContain('"shortName": "work"');
+		for (const field of ["quotaSidebar", "quotaRefresh", "activeAccountName", "showResetTimes"]) {
 			expect(readRepoFile("docs/development/CONFIG_FIELDS.md")).toContain(`\`${field}\``);
 		}
 	});

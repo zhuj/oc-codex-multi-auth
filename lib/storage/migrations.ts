@@ -109,6 +109,8 @@ export interface AccountMetadataV3 {
 	organizationId?: string;
 	accountIdSource?: AccountIdSource;
 	accountLabel?: string;
+	/** Optional compact display name, independent of account identity. */
+	shortName?: string;
 	/** `chatgpt_plan_type` from the access token, e.g. `pro` or `team`. */
 	planType?: string;
 	accountTags?: string[];

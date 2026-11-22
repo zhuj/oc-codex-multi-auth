@@ -124,7 +124,6 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `maskEmailInQuotaDetails` | `CODEX_TUI_MASK_EMAIL_DETAILS` | boolean | `false` | — | also mask the active account email in the quota details dialog (needs `maskEmail`) |
 | `quotaDisplay` | `CODEX_AUTH_QUOTA_DISPLAY` | `free` \| `used` | `free` | — | word quota percentages as headroom or consumption; presentation only |
 | `quotaStatus` | (file only) | object | see below | — | prompt quota status line shape |
-| `accountShortNames` | (file only) | account key → string | `{}` | 16 display columns per alias | seat key → account ID → exact email lookup; safe `[A1]` fallback |
 | `quotaSidebar` | (file only) | object | see below | — | V2 account list, quota percentages and reset countdowns |
 | `quotaRefresh` | (file only) | object | see below | — | shared TUI pool refresh budget; independent of quotaNotifications |
 | `quotaNotifications` | — | object | see below | — | macOS quota alerts + credit-protection poll |

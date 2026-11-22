@@ -28,6 +28,26 @@ function statusPayload(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+type RenderedNode = {
+	children: string | RenderedNode[];
+	fg: string;
+	visible?: boolean;
+	style?: { bold?: boolean; fg?: string };
+	onMouseUp?: (event: { button: number; isDragging?: boolean }) => void;
+};
+
+function sidebarParts(sidebar: { children: unknown }) {
+	const [header, body] = sidebar.children as [RenderedNode, RenderedNode];
+	return { header, body };
+}
+
+function sidebarText(sidebar: { children: unknown; visible?: boolean }): string {
+	if (sidebar.visible === false) return "";
+	const { header, body } = sidebarParts(sidebar);
+	return body.visible === false ? String(header.children)
+		: `${header.children}\n${(body.children as RenderedNode[]).map((span) => span.children).join("")}`;
+}
+
 function createHarness(response: unknown) {
 	type RenderedText = { children: string; fg: string; visible?: boolean; flexShrink?: number; minWidth?: number; truncate?: boolean; wrapMode?: string };
 	const slots = new Map<string, { render: (props: object) => RenderedText | null }>();
@@ -61,6 +81,44 @@ function createHarness(response: unknown) {
 }
 
 describe("V2 accounts UI", () => {
+	it("collapses from the header and expands from the command palette without another request", async () => {
+		vi.useFakeTimers();
+		const harness = createHarness(statusPayload());
+		await vi.advanceTimersByTimeAsync(0);
+		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
+		const { header } = sidebarParts(sidebar);
+		expect(sidebarText(sidebar)).toBe("▼ Codex accounts\n● 1. Work");
+		header.onMouseUp?.({ button: 2 });
+		header.onMouseUp?.({ button: 0, isDragging: true });
+		expect(sidebarText(sidebar)).toContain("● 1. Work");
+		header.onMouseUp?.({ button: 0 });
+		expect(sidebarText(sidebar)).toBe("▶ Codex accounts");
+		await harness.commands.find((command) => command.id === "codex.accounts.toggle")?.run();
+		expect(sidebarText(sidebar)).toBe("▼ Codex accounts\n● 1. Work");
+		expect(harness.status).toHaveBeenCalledTimes(1);
+	});
+
+	it("styles only the name in bold and colors each detail by remaining quota", async () => {
+		vi.useFakeTimers();
+		const harness = createHarness(statusPayload({
+			sidebar: { enabled: true, showQuota: true, showResetTimes: false, color: "default" },
+			quotaDisplay: "used",
+			accounts: [{ index: 1, label: "Work", active: false, enabled: false, quota: { stale: false, limits: [
+				{ label: "5h", leftPercent: 75 }, { label: "weekly", leftPercent: 5 },
+			] } }],
+		}));
+		await vi.advanceTimersByTimeAsync(0);
+		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
+		const spans = sidebarParts(sidebar).body.children as RenderedNode[];
+		expect(spans.filter((span) => span.style?.bold).map((span) => span.children)).toEqual(["Work"]);
+		expect(spans.find((span) => span.children === " (disabled)")?.style?.fg).toBe("#993e3e");
+		expect(spans.find((span) => span.children === "25%")?.style?.fg).toBe("muted");
+		expect(spans.find((span) => span.children === "95%")?.style?.fg).toBe("#a37474");
+		expect(sidebarText(sidebar)).toContain("(25%/95%)");
+		harness.status.mockResolvedValue(statusPayload());
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect((sidebarParts(sidebar).body.children as RenderedNode[]).some((span) => span.style?.bold)).toBe(false);
+	});
 	it("exposes accounts without a mounted prompt and cleans up polling", async () => {
 		vi.useFakeTimers();
 		const slots = new Map<string, { render: (props: object) => { children: string } | null }>();
@@ -91,8 +149,8 @@ describe("V2 accounts UI", () => {
 		slots.get("app")!.render({});
 		await vi.advanceTimersByTimeAsync(0);
 		const sidebar = slots.get("sidebar.content")!.render({})!;
-		expect(sidebar.children).toContain("● 1. First");
-		expect(sidebar.children).toContain("○ 2. Second (disabled)");
+		expect(sidebarText(sidebar)).toContain("● 1. First");
+		expect(sidebarText(sidebar)).toContain("○ 2. Second (disabled)");
 		// The raw renderer width is sent — the status formatter owns the single
 		// reserve discount, so subtracting it here would double-count.
 		expect(status).toHaveBeenCalledWith({ width: 100 }, expect.objectContaining({ location: context.location }));
@@ -120,10 +178,10 @@ describe("V2 accounts UI", () => {
 		configuredProvider = "openai";
 		messages.push({ type: "assistant", model: { providerID: "anthropic" } });
 		expect(slots.get("prompt.footer.status")!.render({ sessionID: "test" })!.children).toBe("");
-		expect(sidebar.children).toContain("First");
+		expect(sidebarText(sidebar)).toContain("First");
 		status.mockRejectedValue(new Error("offline"));
 		await vi.advanceTimersByTimeAsync(2000);
-		expect(sidebar.children).toContain("Accounts unavailable");
+		expect(sidebarText(sidebar)).toContain("Accounts unavailable");
 		await commands.find((command) => command.id === "codex.accounts")!.run();
 		expect(alert.mock.calls[2]?.[0].message).toContain("Account storage: unavailable");
 		expect(alert.mock.calls[2]?.[0].message).not.toContain("the global pool is shared");
@@ -214,9 +272,9 @@ describe("V2 accounts UI", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		const sidebar = slots.get("sidebar.content")!.render({})!;
 		// ASCII glyph mode swaps ●/○ for */o, and every label is sanitized.
-		expect(sidebar.children).toContain("* 1. Fi rst");
-		expect(sidebar.children).toContain("o 2. Second");
-		expect(sidebar.children).not.toContain("\x1b");
+		expect(sidebarText(sidebar)).toContain("* 1. Fi rst");
+		expect(sidebarText(sidebar)).toContain("o 2. Second");
+		expect(sidebarText(sidebar)).not.toContain("\x1b");
 		expect(slots.get("prompt.footer.status")!.render({})!.children).toBe("quota ready\nline two");
 	});
 
@@ -280,21 +338,21 @@ describe("V2 accounts UI", () => {
 		const footer = harness.slots.get("prompt.footer.status")!.render({})!;
 		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
 		expect(footer.fg).toBe("warning");
-		expect(sidebar.fg).toBe("accent");
+		expect(sidebarParts(sidebar).header.fg).toBe("accent");
 		expect(footer).toMatchObject({ flexShrink: 1, minWidth: 0, truncate: true, wrapMode: "none" });
 		harness.theme.text.feedback.warning.base = "new-warning";
 		harness.theme.hue.accent[500] = "new-accent";
 		expect(footer.fg).toBe("new-warning");
-		expect(sidebar.fg).toBe("new-accent");
+		expect(sidebarParts(sidebar).header.fg).toBe("new-accent");
 		harness.status.mockResolvedValue(statusPayload({
 			statusColor: "#A1b2C3", statusTone: "danger",
 			sidebar: { enabled: true, showQuota: false, showResetTimes: false, color: "#123456" },
 		}));
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(footer.fg).toBe("#A1b2C3");
-		expect(sidebar.fg).toBe("#123456");
+		expect(sidebarParts(sidebar).header.fg).toBe("#123456");
 		expect(footer.children).not.toContain("\x1b");
-		expect(sidebar.children).not.toContain("\x1b");
+		expect(sidebarText(sidebar)).not.toContain("\x1b");
 	});
 
 	it.each([
@@ -321,7 +379,7 @@ describe("V2 accounts UI", () => {
 		}));
 		await vi.advanceTimersByTimeAsync(0);
 		expect(harness.slots.get("prompt.footer.status")!.render({})!.fg).toBe(expected);
-		expect(harness.slots.get("sidebar.content")!.render({})!.fg).toBe(expected);
+		expect(sidebarParts(harness.slots.get("sidebar.content")!.render({})!).header.fg).toBe(expected);
 	});
 
 	it("keeps older RPC payloads name-only with the default theme color", async () => {
@@ -331,9 +389,9 @@ describe("V2 accounts UI", () => {
 		const footer = harness.slots.get("prompt.footer.status")!.render({})!;
 		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
 		expect(footer.fg).toBe("base");
-		expect(sidebar.fg).toBe("base");
+		expect(sidebarParts(sidebar).header.fg).toBe("base");
 		expect(sidebar.visible).toBe(true);
-		expect(sidebar.children).toBe("\nCodex accounts\n● 1. Work\n/codex-accounts");
+		expect(sidebarText(sidebar)).toBe("▼ Codex accounts\n● 1. Work");
 	});
 
 	it("updates quota display, independent detail toggles and sidebar visibility without adding pollers", async () => {
@@ -353,34 +411,32 @@ describe("V2 accounts UI", () => {
 		}));
 		await vi.advanceTimersByTimeAsync(0);
 		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
-		expect(sidebar.children).toContain("1. Short");
-		expect(sidebar.children).toContain("5h 70% left, resets in 1h");
-		expect(sidebar.children).toContain("weekly 20% left, resets in 1d");
+		expect(sidebarText(sidebar)).toContain("1. Short");
+		expect(sidebarText(sidebar)).toContain("(70%/20% 1d)");
 		harness.status.mockResolvedValue(statusPayload({
 			accounts, quotaDisplay: "used",
 			sidebar: { enabled: true, showQuota: true, showResetTimes: false, color: "default" },
 		}));
 		await vi.advanceTimersByTimeAsync(2000);
-		expect(sidebar.children).toContain("5h 30% used");
-		expect(sidebar.children).toContain("weekly 80% used");
-		expect(sidebar.children).not.toContain("resets");
+		expect(sidebarText(sidebar)).toContain("(30%/80%)");
+		expect(sidebarText(sidebar)).not.toContain(" in ");
 		harness.status.mockResolvedValue(statusPayload({
 			accounts, quotaDisplay: "used",
 			sidebar: { enabled: true, showQuota: false, showResetTimes: true, color: "default" },
 		}));
 		await vi.advanceTimersByTimeAsync(2000);
-		expect(sidebar.children).toContain("5h resets in 59m");
-		expect(sidebar.children).not.toContain("%");
+		expect(sidebarText(sidebar)).toContain("(23h)");
+		expect(sidebarText(sidebar)).not.toContain("%");
 		harness.status.mockResolvedValue(statusPayload({
 			accounts, quotaDisplay: "used",
 			sidebar: { enabled: false, showQuota: true, showResetTimes: true, color: "default" },
 		}));
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(sidebar.visible).toBe(false);
-		expect(sidebar.children).toBe("");
+		expect(sidebarText(sidebar)).toBe("");
 		await harness.commands.find((command) => command.id === "codex.accounts")!.run();
 		expect(harness.alert).toHaveBeenCalledWith(expect.objectContaining({
-			title: "Codex accounts", message: expect.stringContaining("weekly 80% used, resets in 23h"),
+			title: "Codex accounts", message: expect.stringContaining("(7d: 80% used in 23h)"),
 		}));
 		expect(vi.getTimerCount()).toBe(1);
 	});
@@ -392,18 +448,21 @@ describe("V2 accounts UI", () => {
 		const harness = createHarness(statusPayload({
 			sidebar: { enabled: true, showQuota: true, showResetTimes: true, color: "default" },
 			accounts: [{ index: 1, label: "Work", active: true, enabled: true,
-				quota: { stale: true, readFailed: true, limits: [{ label: "5h", leftPercent: 0, resetAtMs: now + 3000 }] },
+				quota: { stale: true, readFailed: true, limits: [
+					{ label: "5h", leftPercent: 0, resetAtMs: now + 3_600_000 },
+					{ label: "weekly", leftPercent: null, resetAtMs: now + 3_000 },
+				] },
 			}],
 		}));
 		await vi.advanceTimersByTimeAsync(0);
 		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
 		harness.slots.get("prompt.footer.status")!.render({});
-		expect(sidebar.children).toContain("5h 0% left, resets in 1m");
-		expect(sidebar.children).toContain("stale quota; refresh failed");
+		expect(sidebarText(sidebar)).toContain("(0%/? 1m)");
+		expect(sidebarText(sidebar)).toContain("stale quota; refresh failed");
 		expect(harness.status).toHaveBeenCalledTimes(1);
 		expect(vi.getTimerCount()).toBe(1);
 		await vi.advanceTimersByTimeAsync(4000);
-		expect(sidebar.children).toContain("5h 0% left, reset due");
+		expect(sidebarText(sidebar)).toContain("(0%/? reset due)");
 		expect(harness.status).toHaveBeenCalledTimes(3);
 	});
 
@@ -420,7 +479,7 @@ describe("V2 accounts UI", () => {
 		expect(signal.aborted).toBe(true);
 		resolveStatus(statusPayload({ sidebar: { enabled: false, showQuota: true, showResetTimes: true, color: "error" } }));
 		await vi.advanceTimersByTimeAsync(4000);
-		expect(sidebar.children).toContain("Loading accounts");
+		expect(sidebarText(sidebar)).toContain("Loading accounts");
 		expect(sidebar.visible).toBe(true);
 		expect(harness.status).toHaveBeenCalledTimes(1);
 		expect(vi.getTimerCount()).toBe(0);

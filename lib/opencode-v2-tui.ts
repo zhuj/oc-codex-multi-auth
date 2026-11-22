@@ -1,9 +1,9 @@
 import type { Plugin } from "@opencode/plugin/tui";
-import type { TextOptions } from "@opentui/core";
+import { MouseButton, type MouseEvent, type TextOptions } from "@opentui/core";
 import { createElement, spread } from "@opentui/solid";
 import { createSignal, onCleanup } from "solid-js";
 import { CodexStatusRpc } from "./opencode-v2-rpc.js";
-import { formatTuiAccountSidebar } from "./tui-account-sidebar.js";
+import { buildTuiAccountSidebar, formatTuiAccountSidebar, type SidebarTextFragment } from "./tui-account-sidebar.js";
 import { normalizeTuiColor, type TuiColor } from "./tui-color.js";
 import type { QuotaPromptTone } from "./tui-status.js";
 import { sanitizeDisplayBlock, sanitizeDisplayText } from "./ui/display-text.js";
@@ -25,20 +25,25 @@ function resolveV2Color(context: Plugin.Context, color: TuiColor, tone: QuotaPro
 	return semantic.startsWith("#") ? semantic : theme.text.base;
 }
 
+const SIDEBAR_TINTS = { warning: "#9a866c", danger: "#a37474", disabled: "#993e3e" } as const;
+
 /** Register quota and account views; return a disposer for the V2 TUI slots. */
 export function setupV2Tui(context: Plugin.Context) {
 	const [text, setText] = createSignal("");
-	const [accounts, setAccounts] = createSignal("Loading accounts…");
+	const [accounts, setAccounts] = createSignal<readonly SidebarTextFragment[]>([{ text: "Loading accounts…" }]);
 	const [accountStorage, setAccountStorage] = createSignal<"project" | "global" | "unknown">("unknown");
 	const [showFor, setShowFor] = createSignal("always");
 	const [statusColor, setStatusColor] = createSignal<TuiColor>("default");
 	const [statusTone, setStatusTone] = createSignal<QuotaPromptTone>("unknown");
 	const [sidebarEnabled, setSidebarEnabled] = createSignal(true);
 	const [sidebarColor, setSidebarColor] = createSignal<TuiColor>("default");
+	const [sidebarExpanded, setSidebarExpanded] = createSignal(true);
+	const toggleSidebar = () => { setSidebarExpanded(!sidebarExpanded()); };
 	const disposers = [context.ui.slot({
 		append: "app",
 		render: () => {
 			let details = "Quota is loading.";
+			let accountDetails = "Loading accounts…";
 			let disposed = false;
 			let pending = false;
 			const controller = new AbortController();
@@ -72,14 +77,16 @@ export function setupV2Tui(context: Plugin.Context) {
 					setStatusTone(result.statusTone ?? "unknown");
 					setSidebarEnabled(result.sidebar?.enabled ?? true);
 					setSidebarColor(normalizeTuiColor(result.sidebar?.color, "default"));
-					setAccounts(formatTuiAccountSidebar(result.accounts, {
+					const options = {
 						glyphs, quotaDisplay: result.quotaDisplay,
 						showQuota: result.sidebar?.showQuota ?? false,
 						showResetTimes: result.sidebar?.showResetTimes ?? false,
 						// Count down from cached timestamps on the existing RPC
 						// refresh, without another timer or any provider request.
 						now: Date.now(),
-					}));
+					};
+					setAccounts(buildTuiAccountSidebar(result.accounts, { ...options, compact: true }));
+					accountDetails = formatTuiAccountSidebar(result.accounts, options);
 					details = sanitizeDisplayBlock(result.details, { maxLength: 2048 }) ?? "Quota unavailable.";
 				} catch {
 					if (!disposed) {
@@ -89,7 +96,8 @@ export function setupV2Tui(context: Plugin.Context) {
 						setText("limits ?");
 						setStatusTone("unknown");
 						setAccountStorage("unknown");
-						setAccounts(`Accounts unavailable ${fallback.emDash} retry shortly.`);
+						accountDetails = `Accounts unavailable ${fallback.emDash} retry shortly.`;
+						setAccounts([{ text: accountDetails }]);
 						details = `Quota unavailable ${fallback.emDash} retry shortly.`;
 					}
 				} finally {
@@ -164,13 +172,16 @@ export function setupV2Tui(context: Plugin.Context) {
 						await refresh();
 						await context.ui.dialog.alert({
 							title: "Codex accounts",
-							message: `${accounts()}\n\n${accountStorage() === "project"
+							message: `${accountDetails}\n\n${accountStorage() === "project"
 								? "Account storage: this project uses its own pool. If it has no account file yet, an existing global pool is used to seed it; later changes stay in this project."
 								: accountStorage() === "global"
 									? "Account storage: the global pool is shared across projects."
 									: "Account storage: unavailable — retry shortly to check which pool is in use."}\nTo change this, set "perProjectAccounts" to true (per-project) or false (global) in ~/.opencode/openai-codex-auth-config.json, then restart the OpenCode service and TUI. CODEX_AUTH_PER_PROJECT_ACCOUNTS overrides this setting: 1 enables per-project storage; 0 disables it.\n\nAdd an account: run opencode auth login${accountStorage() === "project" ? " from this project directory" : ""}, then select OpenAI → Codex OAuth (Add account — ChatGPT Plus/Pro). Repeat for each account, using a private browser window to choose a different login.`,
 						});
 					},
+				}, {
+					id: "codex.accounts.toggle", title: "Toggle Codex accounts sidebar", group: "Codex", palette: true,
+					run: toggleSidebar,
 				}],
 			}));
 			onCleanup(() => { disposed = true; controller.abort(); clearInterval(timer); });
@@ -205,14 +216,39 @@ export function setupV2Tui(context: Plugin.Context) {
 	}), context.ui.slot({
 		append: "sidebar.content",
 		render: () => {
-			const element = createElement("text");
-			spread(element, {
-				get children() { return sidebarEnabled() ? `\nCodex accounts\n${accounts()}\n/codex-accounts` : ""; },
+			const header = createElement("text");
+			const body = createElement("text");
+			const sidebar = createElement("box");
+			const baseColor = () => resolveV2Color(context, sidebarColor(), statusTone());
+			spread(header, {
+				get children() { return `${sidebarExpanded() ? "▼" : "▶"} Codex accounts`; },
+				get fg() { return baseColor(); },
+				selectable: false,
+				onMouseUp(event: MouseEvent) {
+					if (event.button === MouseButton.LEFT && !event.isDragging) toggleSidebar();
+				},
+			});
+			spread(body, {
+				get children() {
+					if (!sidebarExpanded()) return [];
+					return accounts().map(({ text, bold, tone }) => {
+						const span = createElement("span");
+						const fg = tone === "muted" ? resolveV2Color(context, "muted", "unknown") : tone ? SIDEBAR_TINTS[tone] : undefined;
+						spread(span, { children: text, style: { bold, fg } });
+						return span;
+					});
+				},
+				get fg() { return baseColor(); },
+				get visible() { return sidebarExpanded(); },
+			});
+			spread(sidebar, {
+				children: [header, body],
 				get visible() { return sidebarEnabled(); },
-				get fg() { return resolveV2Color(context, sidebarColor(), statusTone()); },
+				flexDirection: "column",
+				marginTop: 1,
 				flexShrink: 0,
 			});
-			return element;
+			return sidebar;
 		},
 	})];
 	return () => { for (const dispose of disposers) dispose(); };

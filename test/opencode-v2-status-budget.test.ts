@@ -93,12 +93,11 @@ beforeEach(async () => {
 		quotaStatus: { mode: "active", activeAccountName: "short", color: "auto" },
 		quotaSidebar: { enabled: true, accountNames: "short", showQuota: true, showResetTimes: true, color: "default" },
 		quotaRefresh: { enabled: true, intervalMs: INTERVAL },
-		accountShortNames: { FAKE_ACCOUNT_A: "work" },
 	};
 	mocks.pool = {
 		version: 3, activeIndex: 0,
 		accounts: [
-			...ENABLED_IDS.map((id) => account(id)),
+			...ENABLED_IDS.map((id) => id === "FAKE_ACCOUNT_A" ? { ...account(id), shortName: "work" } : account(id)),
 			account("FAKE_ACCOUNT_DISABLED", false),
 			// Repeated stored entries for one quota must not multiply GETs.
 			account("FAKE_ACCOUNT_B"),
@@ -149,13 +148,16 @@ describe("V2 status service request budget", () => {
 		}
 		expect(initial[0]?.text).toContain("[work]");
 		expect(initial[0]?.accounts).toHaveLength(5);
-		expect(initial[0]?.accounts[3]).toMatchObject({ enabled: false, quota: undefined });
+		expect(initial[0]?.accounts[3]?.enabled).toBe(false);
+		expect(initial[0]?.accounts[3]).not.toHaveProperty("quota");
 		expect(initial.every((result) => result.accounts[0]?.quota?.limits[0]?.leftPercent === 60)).toBe(true);
 		const initialSidebar = formatTuiAccountSidebar(initial[0]!.accounts, { showQuota: true, showResetTimes: true, now: NOW });
-		expect(initialSidebar).toContain("5h 60% left, resets in 5m");
+		expect(initialSidebar).toContain("(5h: 60% in 5m)");
 
 		const sameConfig = mocks.config;
-		mocks.config.accountShortNames!.FAKE_ACCOUNT_A = "studio";
+		const active = mocks.pool?.accounts[0];
+		if (!active) throw new Error("Missing active account fixture");
+		active.shortName = "studio";
 		mocks.config.quotaStatus!.color = "#12Ab34";
 		mocks.config.quotaSidebar!.color = "accent";
 		mocks.config.quotaDisplay = "used";
@@ -168,7 +170,7 @@ describe("V2 status service request budget", () => {
 		expect(changed[0]?.text).toContain("[studio]");
 		expect(changed[0]?.accounts[0]).toMatchObject({ displayName: "[studio]", quota: { fetchedAt: NOW } });
 		expect(formatTuiAccountSidebar(changed[0]!.accounts, { showQuota: true, showResetTimes: true, quotaDisplay: "used", now: Date.now() }))
-			.toContain("5h 40% used, resets in 3m");
+			.toContain("(5h: 40% used in 3m)");
 		vi.setSystemTime(NOW + INTERVAL - 1);
 		await readMany(8, 45);
 		expect(fetchMock).toHaveBeenCalledTimes(ENABLED_IDS.length);

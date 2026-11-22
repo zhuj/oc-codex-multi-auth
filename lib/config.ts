@@ -1634,11 +1634,6 @@ export function getQuotaStatus(pluginConfig: PluginConfig): QuotaStatusConfig {
 	};
 }
 
-/** Aliases are resolved and display-sanitized against the current account pool. */
-export function getAccountShortNames(pluginConfig: PluginConfig): Record<string, string> {
-	return pluginConfig.accountShortNames ?? {};
-}
-
 export interface QuotaSidebarConfig {
 	enabled: boolean;
 	accountNames: AccountNameMode;

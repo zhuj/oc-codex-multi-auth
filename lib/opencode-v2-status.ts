@@ -1,6 +1,5 @@
 import { dirname, join } from "node:path";
 import {
-	getAccountShortNames,
 	getCodexTuiGlyphMode,
 	getCodexTuiMaskEmail,
 	getCodexTuiMaskEmailInQuotaDetails,
@@ -85,7 +84,6 @@ export async function readV2Status({ width }: { width: number }) {
 	const status = getQuotaStatus(config);
 	const sidebar = getQuotaSidebar(config);
 	const refresh = getQuotaRefresh(config);
-	const aliases = getAccountShortNames(config);
 	const quotaDisplay = getQuotaDisplay(config);
 	const maskEmail = getCodexTuiMaskEmail(config);
 	const glyphMode = getCodexTuiGlyphMode(config);
@@ -128,7 +126,7 @@ export async function readV2Status({ width }: { width: number }) {
 	} : undefined;
 	const overviewAccounts = overview ? toQuotaOverviewAccounts(overview).map((row) => {
 		const account = accounts[row.index - 1];
-		return { ...row, shortName: account ? resolveAccountShortName(account, row.index, aliases) : `A${row.index}` };
+		return { ...row, shortName: resolveAccountShortName(account, row.index) };
 	}) : [];
 	const reading = readings[activeIndex];
 	const quota: CompactQuotaStatus = active && reading ? {
@@ -138,7 +136,7 @@ export async function readV2Status({ width }: { width: number }) {
 		fetchedAt: reading.fetchedAt, fingerprint: reading.fingerprint,
 		accountIndex: activeIndex + 1, accountCount: accounts.length,
 		accountEmail: active.email, accountLabel: active.accountLabel,
-		accountShortName: resolveAccountShortName(active, activeIndex + 1, aliases),
+		accountShortName: resolveAccountShortName(active, activeIndex + 1),
 		planType: reading.planType,
 	} : { type: accounts.length > 0 ? "unavailable" : "missing" };
 	const prefix = status.prefix;
@@ -146,7 +144,7 @@ export async function readV2Status({ width }: { width: number }) {
 	const activeText = formatPromptStatusText({
 		quota, width, reservedChars, quotaDisplay, maskEmail, glyphMode,
 		activeAccountName: status.activeAccountName,
-		accountHint: active ? { index: activeIndex + 1, shortName: resolveAccountShortName(active, activeIndex + 1, aliases) } : undefined,
+		accountHint: active ? { index: activeIndex + 1, shortName: resolveAccountShortName(active, activeIndex + 1) } : undefined,
 	});
 	const renderScreen = (screen: (typeof status.screens)[number]): string => {
 		if (screen === "active" || !overview) return activeText;
@@ -173,7 +171,7 @@ export async function readV2Status({ width }: { width: number }) {
 		sidebar: { enabled: sidebar.enabled, showQuota: sidebar.showQuota, showResetTimes: sidebar.showResetTimes, color: sidebar.color },
 		accountStorage: getCurrentProjectRoot() ? "project" as const : "global" as const,
 		accounts: accounts.map((account, index) => {
-			const shortName = resolveAccountShortName(account, index + 1, aliases);
+			const shortName = resolveAccountShortName(account, index + 1);
 			const label = sanitizeDisplayText(maskEmailsInText(account.accountLabel ?? "", maskEmail)) ??
 				sanitizeDisplayText(resolveDisplayEmail(account.email, maskEmail)) ?? `Account ${index + 1}`;
 			const value = readings[index];
@@ -182,16 +180,20 @@ export async function readV2Status({ width }: { width: number }) {
 				displayName: sidebar.accountNames === "short" ? `[${shortName}]`
 					: sidebar.accountNames === "full" ? label : sidebar.accountNames === "number" ? `[A${index + 1}]` : "",
 				active: index === activeIndex, enabled: account.enabled !== false,
-				quota: value ? {
+				// OpenCode's JSON encoder rejects explicit undefined, even in optional fields.
+				...(value && { quota: {
 					// Explicit allowlist: do not send cache identity or read-error text.
 					limits: value.limits.map((limit) => ({
 						label: sanitizeDisplayText(limit.label) ?? "quota",
-						leftPercent: limit.leftPercent, usedPercent: limit.usedPercent,
-						windowMinutes: limit.windowMinutes, resetAtMs: limit.resetAtMs,
+						leftPercent: limit.leftPercent,
+						...(limit.usedPercent !== undefined && { usedPercent: limit.usedPercent }),
+						...(limit.windowMinutes !== undefined && { windowMinutes: limit.windowMinutes }),
+						...(limit.resetAtMs !== undefined && { resetAtMs: limit.resetAtMs }),
 					})),
-					fetchedAt: value.fetchedAt, stale: isStaleReading(value, now, refresh.intervalMs),
+					...(value.fetchedAt !== undefined && { fetchedAt: value.fetchedAt }),
+					stale: isStaleReading(value, now, refresh.intervalMs),
 					readFailed: value.readFailedAt !== undefined,
-				} : undefined,
+				} }),
 			};
 		}),
 		details: formatQuotaDetailsText(quota, now, { quotaDisplay, maskEmail: getCodexTuiMaskEmailInQuotaDetails(config) }),

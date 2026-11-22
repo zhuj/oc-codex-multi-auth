@@ -28,6 +28,7 @@ export type AccountLike = {
   accountUserId?: string;
   accountIdSource?: AccountMetadataV3["accountIdSource"];
   accountLabel?: string;
+  shortName?: string;
   accountNote?: string;
   email?: string;
   refreshToken: string;
@@ -242,6 +243,7 @@ function mergeAccountRecords<T extends AccountLike>(target: T, source: T): T {
     accountUserId: target.accountUserId ?? source.accountUserId,
     accountIdSource: target.accountIdSource ?? source.accountIdSource,
     accountLabel: target.accountLabel ?? source.accountLabel,
+    shortName: target.shortName ?? source.shortName,
     accountNote,
     email: target.email ?? source.email,
     enabled: resolveMergedEnabled(target, source),

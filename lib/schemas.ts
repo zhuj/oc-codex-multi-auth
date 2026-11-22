@@ -34,7 +34,6 @@ export const PluginConfigSchema = z.object({
 	maskEmailInQuotaDetails: z.boolean().optional(),
 	quotaDisplay: z.enum(["free", "used"]).optional(),
 	// Presentation mistakes should not discard unrelated routing/auth settings.
-	accountShortNames: z.record(z.string(), z.string().catch("")).catch({}).optional(),
 	quotaSidebar: z.object({
 		enabled: z.boolean().optional(),
 		accountNames: z.enum(["short", "full", "number", "none"]).optional(),
@@ -211,6 +210,7 @@ export const AccountMetadataV3Schema = z.object({
 	organizationId: z.string().optional(),
 	accountIdSource: AccountIdSourceSchema.optional(),
 	accountLabel: z.string().optional(),
+	shortName: z.string().optional(),
 	planType: z.string().optional(),
 	accountTags: AccountTagsSchema,
 	accountNote: AccountNoteSchema,

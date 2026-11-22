@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import type { PluginConfig } from "../lib/types.js";
 
@@ -190,15 +191,29 @@ it("passes resetsMinUsedPercent to the V2 resets screen", async () => {
 describe("V2 configurable identities and sidebar quota", () => {
 	afterEach(() => { mocks.realFormat = false; });
 
-	it("shows short aliases even with no quota and applies config edits without changing account identity", async () => {
+	it("omits absent quota and nested fields from the JSON RPC response", async () => {
+		const account = mocks.pool?.accounts[1];
+		if (!account) throw new Error("Missing account fixture");
+		mocks.overview.mockResolvedValue({ version: 1, fetchedAt: Date.now(), accounts: [
+			{ index: 2, fingerprint: createUsageAccountFingerprint(account), limits: [{ label: "5h", leftPercent: null, resetAtMs: 0 }] },
+		] });
+		const output = CodexStatusRpc.methods.status.output.parse(await readV2Status({ width: 100 }));
+		expect(z.json().safeParse({ output }).success).toBe(true);
+		expect(output.accounts[0]).not.toHaveProperty("quota");
+		expect(output.accounts[1]?.quota?.limits).toStrictEqual([{ label: "5h", leftPercent: null, resetAtMs: 0 }]);
+	});
+
+	it("shows stored short names even with no quota and picks up account edits", async () => {
 		mocks.realFormat = true;
-		mocks.config = { accountShortNames: { "second@example.com": "work" } };
+		const account = mocks.pool?.accounts[1];
+		if (!account) throw new Error("Missing account fixture");
+		account.shortName = "work";
 		let result = await readV2Status({ width: 120 });
 		expect(result.text).toContain("[work]");
 		expect(result.text).not.toContain("example.com");
 		expect(result.accounts[1]).toMatchObject({ shortName: "work", displayName: "[work]", active: true });
 		expect(result.accounts[0]?.displayName).toBe("[A1]");
-		mocks.config.accountShortNames!["second@example.com"] = "personal";
+		account.shortName = "personal";
 		result = await readV2Status({ width: 120 });
 		expect(result.text).toContain("[personal]");
 		mocks.quotaStatus = { activeAccountName: "none" };

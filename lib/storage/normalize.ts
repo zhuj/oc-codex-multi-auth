@@ -279,6 +279,7 @@ export function normalizeAccountStorage(
     const seeded =
       fromVersion === 1 ? seedV1RateLimitState(account) : account;
     const sanitized = sanitizeAccountNumericState(seeded);
+    if (typeof sanitized.shortName !== "string") delete sanitized.shortName;
     const named = dropStaleGeneratedLabel(sanitized);
     // `accountUserId` is untrusted input here: a hand-edited or corrupted
     // file can hold a non-string or whitespace-only value, and calling

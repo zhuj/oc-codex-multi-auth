@@ -7,7 +7,6 @@ import {
 	getCodexTuiGlyphMode,
 	getCodexTuiMaskEmail,
 	getCodexTuiMaskEmailInQuotaDetails,
-	getAccountShortNames,
 	getQuotaDisplay,
 	getQuotaRefresh,
 	getQuotaStatus,
@@ -479,7 +478,6 @@ type PromptStatusOptions = {
 	quotaDisplay: QuotaDisplayMode;
 	quotaStatus: QuotaStatusConfig;
 	glyphMode: UiGlyphMode;
-	accountShortNames: Readonly<Record<string, string>>;
 };
 
 export function readPromptStatusOptions(): PromptStatusOptions {
@@ -490,7 +488,6 @@ export function readPromptStatusOptions(): PromptStatusOptions {
 		quotaDisplay: getQuotaDisplay(pluginConfig),
 		quotaStatus: getQuotaStatus(pluginConfig),
 		glyphMode: getCodexTuiGlyphMode(pluginConfig),
-		accountShortNames: getAccountShortNames(pluginConfig),
 	};
 }
 
@@ -512,9 +509,6 @@ export function samePromptStatusOptions(
 		left.maskEmailInQuotaDetails === right.maskEmailInQuotaDetails &&
 		left.quotaDisplay === right.quotaDisplay &&
 		left.glyphMode === right.glyphMode &&
-		Object.keys(left.accountShortNames).length === Object.keys(right.accountShortNames).length &&
-		Object.entries(left.accountShortNames).every(([key, value]) =>
-			Object.hasOwn(right.accountShortNames, key) && right.accountShortNames[key] === value) &&
 		leftStatus.screens.length === rightStatus.screens.length &&
 		leftStatus.screens.every(
 			(screen, position) => screen === rightStatus.screens[position],
@@ -750,7 +744,7 @@ function createOverviewQuotaController(
 			return render({
 				accounts: current.accounts.map((account) => ({
 					...account,
-					shortName: resolveAccountShortName(current.nameAccounts.get(account.index) ?? {}, account.index, options.accountShortNames),
+					shortName: resolveAccountShortName(current.nameAccounts.get(account.index), account.index),
 				})),
 				options: toQuotaOverviewOptions(options, Date.now()),
 				resetsMinUsedPercent: options.quotaStatus.resetsMinUsedPercent,
@@ -909,7 +903,7 @@ function createActiveQuotaController(
 			const namedQuota = current.type === "ready"
 				? { ...current,
 					accountIndex: account ? index + 1 : current.accountIndex,
-					accountShortName: resolveAccountShortName(account ?? {}, account ? index + 1 : current.accountIndex ?? 1, options.accountShortNames),
+					accountShortName: resolveAccountShortName(account, account ? index + 1 : current.accountIndex ?? 1),
 				}
 				: current;
 			const text = formatPromptStatusText({
@@ -922,7 +916,7 @@ function createActiveQuotaController(
 				reservedChars: layout.reservedChars,
 				maskEmail: options.maskEmail,
 				activeAccountName: options.quotaStatus.activeAccountName,
-				accountHint: account ? { index: index + 1, shortName: resolveAccountShortName(account, index + 1, options.accountShortNames) } : undefined,
+				accountHint: account ? { index: index + 1, shortName: resolveAccountShortName(account, index + 1) } : undefined,
 				quotaDisplay: options.quotaDisplay,
 				glyphMode: options.glyphMode,
 			});

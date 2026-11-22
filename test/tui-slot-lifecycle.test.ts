@@ -79,9 +79,9 @@ describe("TUI status slot lifecycle", () => {
 		vi.useFakeTimers();
 		const dir = await mkdtemp(join(tmpdir(), "tui-alias-reload-"));
 		vi.stubEnv("OPENCODE_STATE_DIR", dir);
-		const account = { accountId: "FAKE_ACCOUNT", accountUserId: "FAKE_MEMBER", refreshToken: "FAKE_REFRESH", email: "member@example.test", addedAt: 1, lastUsed: 1 };
-		vi.spyOn(storage, "loadAccounts").mockResolvedValue({ version: 3, activeIndex: 0, accounts: [account] });
-		let currentConfig = { accountShortNames: { "seat:[\"FAKE_ACCOUNT\",\"FAKE_MEMBER\"]": "work" }, quotaStatus: { activeAccountName: "short" as const, color: "accent" } };
+		const account = { accountId: "FAKE_ACCOUNT", accountUserId: "FAKE_MEMBER", refreshToken: "FAKE_REFRESH", email: "member@example.test", shortName: "work", addedAt: 1, lastUsed: 1 };
+		const loadAccounts = vi.spyOn(storage, "loadAccounts").mockResolvedValue({ version: 3, activeIndex: 0, accounts: [account] });
+		let currentConfig = { quotaStatus: { activeAccountName: "short" as const, color: "accent" } };
 		vi.spyOn(config, "loadPluginConfig").mockImplementation(() => currentConfig);
 		const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected provider request"));
 		const snapshot = createTuiQuotaSnapshot({ fingerprint: createUsageAccountFingerprint(account), source: "headers", accountIndex: 1, accountCount: 1, limits: [{ label: "5h", leftPercent: 80 }] });
@@ -103,7 +103,8 @@ describe("TUI status slot lifecycle", () => {
 			theme.accent = "accent-updated";
 			expect(node.fg).toBe("accent-updated");
 			const registered = events.mock.calls.length;
-			currentConfig = { accountShortNames: { "seat:[\"FAKE_ACCOUNT\",\"FAKE_MEMBER\"]": "home" }, quotaStatus: { activeAccountName: "short", color: "#123abc" } };
+			loadAccounts.mockResolvedValue({ version: 3, activeIndex: 0, accounts: [{ ...account, shortName: "home" }] });
+			currentConfig = { quotaStatus: { activeAccountName: "short", color: "#123abc" } };
 			await vi.advanceTimersByTimeAsync(15_000);
 			expect(node.content).toContain("[home]");
 			expect(node.fg).toBe("#123abc");

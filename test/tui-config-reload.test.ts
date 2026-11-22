@@ -173,7 +173,6 @@ describe("TUI status configuration reload", () => {
 			{ ...base, quotaDisplay: "used" },
 			{ ...base, maskEmail: true },
 			{ ...base, maskEmailInQuotaDetails: true },
-			{ ...base, accountShortNames: { "FAKE_ACCOUNT": "work" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, activeAccountName: "full" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, color: "accent" } },
 			{ ...base, quotaStatus: { ...base.quotaStatus, mode: "overview" } },

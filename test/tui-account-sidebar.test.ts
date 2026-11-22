@@ -11,6 +11,12 @@ function account(overrides: Partial<TuiSidebarAccount> = {}): TuiSidebarAccount 
 }
 
 describe("cached account sidebar formatting", () => {
+	it("shows the weekly percentage and countdown on one compact detail line", () => {
+		const text = formatTuiAccountSidebar([account({ quota: { stale: false, limits: [
+			{ label: "weekly", leftPercent: 25, resetAtMs: NOW + 5 * 24 * HOUR },
+		] } })], { showQuota: true, showResetTimes: true, now: NOW });
+		expect(text).toBe("● 1. Work\n  (7d: 25% in 5d)");
+	});
 	it("pairs every account's percentages with the matching window's reset", () => {
 		const text = formatTuiAccountSidebar([
 			account({ quota: { stale: false, limits: [
@@ -24,10 +30,10 @@ describe("cached account sidebar formatting", () => {
 		], { showQuota: true, showResetTimes: true, now: NOW });
 		expect(text).toBe([
 			"● 1. Work",
-			"  5h 73% left, resets in 2h",
-			"  weekly 40% left, resets in 2d",
+			"  (5h: 73% in 2h)",
+			"  (7d: 40% in 2d)",
 			"○ 2. Personal",
-			"  5h 10% left, resets in 30m",
+			"  (5h: 10% in 30m)",
 			"○ 3. Paused (disabled)",
 			"  quota unavailable",
 		].join("\n"));
@@ -39,14 +45,14 @@ describe("cached account sidebar formatting", () => {
 			{ label: "weekly", leftPercent: null, usedPercent: 50 },
 		] } })];
 		expect(formatTuiAccountSidebar(rows, { showQuota: true, quotaDisplay: "free" }))
-			.toBe("● 1. Work\n  5h 88% left\n  weekly ? left");
+			.toBe("● 1. Work\n  (5h: 88%)\n  (7d: ?)");
 		expect(formatTuiAccountSidebar(rows, { showQuota: true, quotaDisplay: "used" }))
-			.toBe("● 1. Work\n  5h 12% used\n  weekly ? used");
+			.toBe("● 1. Work\n  (5h: 12% used)\n  (7d: ?)");
 	});
 
 	it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 101])("does not render invalid remaining quota %s as a valid percentage", (leftPercent) => {
 		const text = formatTuiAccountSidebar([account({ quota: { stale: false, limits: [{ label: "5h", leftPercent }] } })], { showQuota: true });
-		expect(text).toContain("5h ? left");
+		expect(text).toContain("(5h: ?)");
 	});
 
 	it("supports percentage and reset toggles independently", () => {
@@ -55,9 +61,9 @@ describe("cached account sidebar formatting", () => {
 			{ label: "weekly", leftPercent: 100, usedPercent: 0, windowMinutes: 10080 },
 		] } })];
 		expect(formatTuiAccountSidebar(rows, { showQuota: true, now: NOW }))
-			.toBe("● 1. Work\n  5h 20% left\n  weekly 100% left");
+			.toBe("● 1. Work\n  (5h: 20%)\n  (7d: 100%)");
 		expect(formatTuiAccountSidebar(rows, { showResetTimes: true, now: NOW }))
-			.toBe("● 1. Work\n  5h resets in 2h");
+			.toBe("● 1. Work\n  (5h: in 2h)");
 		expect(formatTuiAccountSidebar(rows, { now: NOW })).toBe("● 1. Work");
 	});
 
@@ -66,7 +72,7 @@ describe("cached account sidebar formatting", () => {
 			{ label: "5h", leftPercent: 0, resetAtMs: NOW - 1 },
 			{ label: "weekly", leftPercent: 10, resetAtMs: NOW },
 		] } })], { showQuota: true, showResetTimes: true, now: NOW });
-		expect(text).toBe("● 1. Work\n  5h 0% left, reset due\n  weekly 10% left, reset due");
+		expect(text).toBe("● 1. Work\n  (5h: 0%, reset due)\n  (7d: 10%, reset due)");
 	});
 
 	it("counts down only from valid absolute timestamps, never window lengths", () => {
@@ -76,7 +82,7 @@ describe("cached account sidebar formatting", () => {
 				label: `missing${index}`, leftPercent: 100, windowMinutes: 300, resetAtMs,
 			}))),
 		] } })], { showResetTimes: true, now: NOW });
-		expect(text).toBe("● 1. Work\n  soon resets in 1m");
+		expect(text).toBe("● 1. Work\n  (soon: in 1m)");
 	});
 
 	it("labels stale and failed readings while retaining the cached percentages", () => {
@@ -85,7 +91,7 @@ describe("cached account sidebar formatting", () => {
 			account({ index: 2, quota: { stale: true, limits: [] } }),
 			account({ index: 3, enabled: false, quota: { stale: false, readFailed: true, limits: [] } }),
 		], { showQuota: true, now: NOW });
-		expect(text).toContain("5h 5% left\n  stale quota; refresh failed");
+		expect(text).toContain("(5h: 5%)\n  stale quota; refresh failed");
 		expect(text).toContain("quota unavailable\n  stale quota");
 		expect(text).toContain("(disabled)\n  quota unavailable\n  refresh failed");
 	});
@@ -98,7 +104,7 @@ describe("cached account sidebar formatting", () => {
 			account({ index: 2, displayName: "界".repeat(40), active: false, enabled: false }),
 		], { showQuota: true, showResetTimes: true, now: NOW, glyphs: resolveUiGlyphs("ascii") });
 		expect(text).toContain("* 1. Work team");
-		expect(text).toContain("weekly 25% left, resets in 1h");
+		expect(text).toContain("(7d: 25% in 1h)");
 		expect(text).toContain("... (disabled)");
 		expect(text).not.toMatch(/[\x1b\u202e]/);
 		for (const line of text.split("\n")) expect(displayWidth(line)).toBeLessThanOrEqual(35);

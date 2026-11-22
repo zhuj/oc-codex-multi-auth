@@ -13,6 +13,7 @@ import {
   StorageError,
   type AccountStorageV3,
 } from "../lib/storage.js";
+import { AccountStorageV3Schema } from "../lib/schemas.js";
 
 describe("Storage Module - Async Operations", () => {
   let testDir: string;
@@ -30,6 +31,19 @@ describe("Storage Module - Async Operations", () => {
   });
 
   describe("normalizeAccountStorage", () => {
+    it("keeps short names optional and ignores malformed names without dropping accounts", () => {
+      const named = { refreshToken: "FAKE_NAMED", addedAt: 1, lastUsed: 1, shortName: "work", enabled: false };
+      const unnamed = { refreshToken: "FAKE_UNNAMED", addedAt: 2, lastUsed: 2 };
+      const malformed = { refreshToken: "FAKE_MALFORMED", addedAt: 3, lastUsed: 3, shortName: 5 };
+      const storage = { version: 3, activeIndex: 1, accounts: [named, unnamed] };
+      expect(AccountStorageV3Schema.parse(storage).accounts[0]).toMatchObject({ shortName: "work", enabled: false });
+      const normalized = normalizeAccountStorage({ ...storage, accounts: [...storage.accounts, malformed] });
+      expect(normalized?.accounts).toHaveLength(3);
+      expect(normalized?.accounts[0]).toHaveProperty("shortName", "work");
+      expect(normalized?.accounts[1]).not.toHaveProperty("shortName");
+      expect(normalized?.accounts[2]).not.toHaveProperty("shortName");
+    });
+
     it("returns null for non-object input", () => {
       expect(normalizeAccountStorage(null)).toBeNull();
       expect(normalizeAccountStorage(undefined)).toBeNull();

@@ -158,8 +158,10 @@ export class AccountPersistence {
 						return !mine || getWorkspaceIdentityKey(account) !== getWorkspaceIdentityKey(mine);
 					});
 				storage.accounts = current.accounts.map((account) => {
-					const mine = mineByIdentity.get(getWorkspaceIdentityKey(account));
-					if (!mine) return account;
+					const local = mineByIdentity.get(getWorkspaceIdentityKey(account));
+					if (!local) return account;
+					// Only disk owns short names; a rotation save must preserve edits and deletions.
+					const mine = account.shortName === undefined ? local : { ...local, shortName: account.shortName };
 					// Take persisted enabled state from disk unless this manager just
 					// disabled the account — and then only while the disk record still
 					// carries the credential that failed. A rotated token means a

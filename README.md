@@ -181,7 +181,7 @@ The TUI prompt line shows quota for the account that served the current session'
 
 Pass a list (`["overview", "resets"]`) to rotate screens every `rotateMs` (default 5s). Percentages read as headroom left; set `quotaDisplay: "used"` to show consumption. All layout and forecast options are documented in [docs/configuration.md](docs/configuration.md).
 
-The active footer uses compact `[work]` names configured in `accountShortNames`
+The active footer uses compact `[work]` names set in each account's optional `shortName`
 (falling back to `[A1]`). OpenCode V2's account sidebar shows each available
 quota window's percentage and reset countdown. Footer and sidebar colors can
 use the host theme or a custom hex color, including on OpenCode 2.3+.

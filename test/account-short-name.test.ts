@@ -1,42 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { getModelPoolAccountKey } from "../lib/accounts/pool-identity.js";
 import { resolveAccountShortName, sanitizeAccountShortName } from "../lib/account-short-name.js";
 import { formatPromptStatusText, type CompactQuotaStatus } from "../lib/tui-status.js";
 import { formatQuotaCreditsCandidates, formatQuotaOverviewCandidates, formatQuotaResetsCandidates, resolveAccountName, type QuotaOverviewAccount } from "../lib/quota-overview.js";
 import { displayWidth } from "../lib/ui/display-text.js";
 
 describe("account short names", () => {
-	const first = { accountId: "FAKE_WORKSPACE", accountUserId: "FAKE_USER_1", email: "member@example.test" };
-	const second = { ...first, accountUserId: "FAKE_USER_2" };
-
-	it("prefers a stable member seat key to a shared workspace or email", () => {
-		const key = getModelPoolAccountKey(first);
-		if (!key) throw new Error("missing fixture seat key");
-		const aliases = { [key]: "personal", FAKE_WORKSPACE: "team", "member@example.test": "mail" };
-		expect(resolveAccountShortName(first, 1, aliases)).toBe("personal");
-		expect(resolveAccountShortName(first, 9, aliases)).toBe("personal");
-		expect(resolveAccountShortName(second, 2, aliases)).toBe("team");
-		expect(resolveAccountShortName({ email: first.email }, 1, aliases)).toBe("mail");
-	});
-
-	it("resolves an unbackfilled seat identity from the existing token without network access", () => {
-		const payload = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_user_id: "FAKE_USER_1" } })).toString("base64url");
-		const account = { accountId: "FAKE_WORKSPACE", accessToken: `e30.${payload}.FAKE_SIGNATURE` };
-		const key = getModelPoolAccountKey(first);
-		if (!key) throw new Error("missing fixture seat key");
-		expect(resolveAccountShortName(account, 2, { [key]: "work" })).toBe("work");
+	it("keeps a short name with its account when the pool is reordered", () => {
+		const account = { shortName: "[personal]" };
+		expect(resolveAccountShortName(account, 1)).toBe("personal");
+		expect(resolveAccountShortName(account, 9)).toBe("personal");
 	});
 
 	it("never substitutes a full identity when an alias is absent or unusable", () => {
-		expect(resolveAccountShortName(first, 3)).toBe("A3");
-		expect(resolveAccountShortName(first, 3, { FAKE_WORKSPACE: "[]\u001b[31m\u001b[0m" })).toBe("A3");
-		expect(resolveAccountShortName({ accountId: "toString" }, 4, {})).toBe("A4");
-		expect(resolveAccountShortName(first, 3, Object.create({ FAKE_WORKSPACE: "inherited" }))).toBe("A3");
-	});
-
-	it("matches email keys exactly instead of merging unrelated seats", () => {
-		expect(resolveAccountShortName({ email: " Member@example.test " }, 1, { "member@example.test": "different" })).toBe("A1");
-		expect(resolveAccountShortName({ email: " member@example.test " }, 1, { "member@example.test": "work" })).toBe("work");
+		expect(resolveAccountShortName({}, 3)).toBe("A3");
+		expect(resolveAccountShortName({ shortName: "[]\u001b[31m\u001b[0m" }, 3)).toBe("A3");
+		expect(resolveAccountShortName(undefined, 4)).toBe("A4");
 	});
 
 	it("sanitizes terminal controls, brackets and bidi marks", () => {

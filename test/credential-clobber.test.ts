@@ -102,6 +102,19 @@ function persistedStorage(): AccountStorageV3 | undefined {
 }
 
 describe("AccountPersistence account membership", () => {
+	it("preserves a short name edited on disk and does not resurrect a deleted one", async () => {
+		const account = makeStoredAccount();
+		const persistence = new AccountPersistence(makeState([{ ...account, shortName: "old" }]));
+		diskStateRef.current = { version: 3, accounts: [{ ...account, shortName: "work" }], activeIndex: 0 };
+		await persistence.saveToDisk();
+		expect(persistedStorage()?.accounts[0]).toHaveProperty("shortName", "work");
+
+		diskStateRef.current = { version: 3, accounts: [account], activeIndex: 0 };
+		saveAccountsMock.mockClear();
+		await persistence.saveToDisk();
+		expect(persistedStorage()?.accounts[0]).not.toHaveProperty("shortName");
+	});
+
 	it("preserves newly added accounts from another process", async () => {
 		const state = makeState([makeStoredAccount()]);
 		const persistence = new AccountPersistence(state);
