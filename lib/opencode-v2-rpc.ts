@@ -17,6 +17,7 @@ export const CodexStatusRpc = Rpc.define({
 				quotaDisplay: z.enum(["free", "used"]).optional(),
 				sidebar: z.object({
 					enabled: z.boolean(), showQuota: z.boolean(), showResetTimes: z.boolean(), color: z.string(),
+					showFiveHour: z.boolean().optional(),
 				}).optional(),
 				accounts: z.array(z.object({
 					index: z.number().int(), label: z.string(), active: z.boolean(), enabled: z.boolean(),

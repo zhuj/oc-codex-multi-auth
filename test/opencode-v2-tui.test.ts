@@ -98,7 +98,7 @@ describe("V2 accounts UI", () => {
 		expect(harness.status).toHaveBeenCalledTimes(1);
 	});
 
-	it("styles only the name in bold and colors each detail by remaining quota", async () => {
+	it("bolds the weekly percentage and omits 5h and parentheses by default", async () => {
 		vi.useFakeTimers();
 		const harness = createHarness(statusPayload({
 			sidebar: { enabled: true, showQuota: true, showResetTimes: false, color: "default" },
@@ -110,11 +110,11 @@ describe("V2 accounts UI", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
 		const spans = sidebarParts(sidebar).body.children as RenderedNode[];
-		expect(spans.filter((span) => span.style?.bold).map((span) => span.children)).toEqual(["Work"]);
+		expect(spans.filter((span) => span.style?.bold).map((span) => span.children)).toEqual(["Work", "95%"]);
 		expect(spans.find((span) => span.children === " (disabled)")?.style?.fg).toBe("#993e3e");
-		expect(spans.find((span) => span.children === "25%")?.style?.fg).toBe("muted");
+		expect(spans.some((span) => span.children === "25%")).toBe(false);
 		expect(spans.find((span) => span.children === "95%")?.style?.fg).toBe("#a37474");
-		expect(sidebarText(sidebar)).toContain("(25%/95%)");
+		expect(sidebarText(sidebar)).toMatch(/\n  95%$/);
 		harness.status.mockResolvedValue(statusPayload());
 		await vi.advanceTimersByTimeAsync(2_000);
 		expect((sidebarParts(sidebar).body.children as RenderedNode[]).some((span) => span.style?.bold)).toBe(false);
@@ -412,20 +412,21 @@ describe("V2 accounts UI", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
 		expect(sidebarText(sidebar)).toContain("1. Short");
-		expect(sidebarText(sidebar)).toContain("(70%/20% 1d)");
+		expect(sidebarText(sidebar)).toMatch(/\n  20% 1d$/);
 		harness.status.mockResolvedValue(statusPayload({
 			accounts, quotaDisplay: "used",
-			sidebar: { enabled: true, showQuota: true, showResetTimes: false, color: "default" },
+			sidebar: { enabled: true, showQuota: true, showResetTimes: false, showFiveHour: true, color: "default" },
 		}));
 		await vi.advanceTimersByTimeAsync(2000);
-		expect(sidebarText(sidebar)).toContain("(30%/80%)");
+		expect(sidebarText(sidebar)).toMatch(/\n  30%\/80%$/);
+		expect((sidebarParts(sidebar).body.children as RenderedNode[]).find((span) => span.children === "30%")?.style?.bold).not.toBe(true);
 		expect(sidebarText(sidebar)).not.toContain(" in ");
 		harness.status.mockResolvedValue(statusPayload({
 			accounts, quotaDisplay: "used",
 			sidebar: { enabled: true, showQuota: false, showResetTimes: true, color: "default" },
 		}));
 		await vi.advanceTimersByTimeAsync(2000);
-		expect(sidebarText(sidebar)).toContain("(23h)");
+		expect(sidebarText(sidebar)).toMatch(/\n  23h$/);
 		expect(sidebarText(sidebar)).not.toContain("%");
 		harness.status.mockResolvedValue(statusPayload({
 			accounts, quotaDisplay: "used",
@@ -457,12 +458,12 @@ describe("V2 accounts UI", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		const sidebar = harness.slots.get("sidebar.content")!.render({})!;
 		harness.slots.get("prompt.footer.status")!.render({});
-		expect(sidebarText(sidebar)).toContain("(0%/? 1m)");
+		expect(sidebarText(sidebar)).toContain("\n  ? 1m");
 		expect(sidebarText(sidebar)).toContain("stale quota; refresh failed");
 		expect(harness.status).toHaveBeenCalledTimes(1);
 		expect(vi.getTimerCount()).toBe(1);
 		await vi.advanceTimersByTimeAsync(4000);
-		expect(sidebarText(sidebar)).toContain("(0%/? reset due)");
+		expect(sidebarText(sidebar)).toContain("\n  ? reset due");
 		expect(harness.status).toHaveBeenCalledTimes(3);
 	});
 

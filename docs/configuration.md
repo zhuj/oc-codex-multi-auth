@@ -335,6 +335,7 @@ These optional display settings go in `~/.opencode/openai-codex-auth-config.json
     "accountNames": "short",
     "showQuota": true,
     "showResetTimes": true,
+    "showFiveHour": false,
     "color": "default"
   },
   "quotaRefresh": {
@@ -374,14 +375,17 @@ palette; it is separate from these host TUI foreground settings.
 | --- | --- | --- |
 | `quotaSidebar.enabled` | `true` | show the OpenCode V2 sidebar section; `/codex-accounts` remains available when hidden |
 | `quotaSidebar.accountNames` | `short` | `short`: `[work]`; `full`: label/email with email masking; `number`: `[A1]`; `none`: omit the name (the account index remains) |
-| `quotaSidebar.showQuota` | `true` | show each reported 5-hour and weekly window's percentage, following `quotaDisplay` |
+| `quotaSidebar.showQuota` | `true` | show quota percentages, following `quotaDisplay` |
+| `quotaSidebar.showFiveHour` | `false` | include the 5-hour window in sidebar quota data and show its percentage when `showQuota` is on |
 | `quotaSidebar.showResetTimes` | `true` | show the weekly reset countdown in the sidebar when the backend reports a timestamp; works independently of `showQuota` |
 | `quotaSidebar.color` | `default` | heading and account-name color, using the same choices as `quotaStatus.color` |
 
 Click the **Codex accounts** heading (`▼` expanded, `▶` collapsed) or use
 **Toggle Codex accounts sidebar** in the command palette. When quota details
-are on, only the account name is bold. The compact line `(70%/25% 5d)` shows
-the 5-hour percentage, weekly percentage, and time until the weekly reset.
+are on, the account name and weekly percentage are bold. The compact line
+shows **25%** 5d by default, or 70%/**25%** 5d with `showFiveHour` enabled.
+The usage endpoint returns both windows in one response, so enabling the 5-hour
+window does not trigger an additional provider request.
 Muted colors reflect remaining quota even when displaying percent used. The
 `(disabled)` marker is dark red.
 

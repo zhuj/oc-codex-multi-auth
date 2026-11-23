@@ -1639,6 +1639,7 @@ export interface QuotaSidebarConfig {
 	accountNames: AccountNameMode;
 	showQuota: boolean;
 	showResetTimes: boolean;
+	showFiveHour: boolean;
 	color: TuiColor;
 }
 
@@ -1650,6 +1651,7 @@ export function getQuotaSidebar(pluginConfig: PluginConfig): QuotaSidebarConfig 
 		accountNames: pickEnum(config?.accountNames, ACCOUNT_NAME_MODES, "short"),
 		showQuota: config?.showQuota ?? true,
 		showResetTimes: config?.showResetTimes ?? true,
+		showFiveHour: config?.showFiveHour ?? false,
 		color: normalizeTuiColor(config?.color, "default"),
 	};
 }

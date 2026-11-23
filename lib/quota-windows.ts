@@ -15,6 +15,19 @@
 
 export type CodexQuotaWindowKind = "primary" | "secondary";
 
+interface LabeledQuotaWindow {
+	readonly label: string;
+	readonly windowMinutes?: number;
+}
+
+export function isFiveHourQuotaWindow({ label, windowMinutes }: LabeledQuotaWindow): boolean {
+	return windowMinutes === 300 || /^5h$/i.test(label);
+}
+
+export function isWeeklyQuotaWindow({ label, windowMinutes }: LabeledQuotaWindow): boolean {
+	return windowMinutes === 10_080 || /^(weekly|7d)$/i.test(label);
+}
+
 export interface CodexQuotaWindow {
 	kind: CodexQuotaWindowKind;
 	/** 0-100. Values >= 100 mean the window is spent. */

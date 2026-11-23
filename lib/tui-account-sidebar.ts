@@ -2,6 +2,7 @@ import type { Rpc } from "@opencode/plugin/rpc";
 import type { CodexStatusRpc } from "./opencode-v2-rpc.js";
 import { formatQuotaPercent, type QuotaDisplayMode } from "./quota-display.js";
 import { formatCompactDuration } from "./quota-overview.js";
+import { isFiveHourQuotaWindow, isWeeklyQuotaWindow } from "./quota-windows.js";
 import { displayWidth, sanitizeDisplayText, truncateToDisplayWidth } from "./ui/display-text.js";
 import { resolveUiGlyphs, type UiGlyphSet } from "./ui/theme.js";
 
@@ -10,6 +11,7 @@ export type TuiSidebarAccount = Rpc.Output<typeof CodexStatusRpc.methods.status.
 export interface TuiAccountSidebarOptions {
 	showQuota?: boolean;
 	showResetTimes?: boolean;
+	showFiveHour?: boolean;
 	quotaDisplay?: QuotaDisplayMode;
 	glyphs?: Pick<UiGlyphSet, "active" | "inactive" | "ellipsis">;
 	now?: number;
@@ -33,8 +35,8 @@ function formatResetCountdown(resetAtMs: number | undefined, now: number, compac
 	return duration && !compact ? `in ${duration}` : duration;
 }
 
-function quotaDetail(limit: NonNullable<TuiSidebarAccount["quota"]>["limits"][number] | undefined, mode: QuotaDisplayMode): SidebarTextFragment {
-	const left = limit?.leftPercent;
+function quotaDetail(limit: NonNullable<TuiSidebarAccount["quota"]>["limits"][number], mode: QuotaDisplayMode): SidebarTextFragment {
+	const left = limit.leftPercent;
 	const validLeft = typeof left === "number" && Number.isFinite(left) && left >= 0 && left <= 100 ? left : undefined;
 	return {
 		text: validLeft === undefined ? "?" : formatQuotaPercent(Math.round(validLeft), mode),
@@ -43,18 +45,20 @@ function quotaDetail(limit: NonNullable<TuiSidebarAccount["quota"]>["limits"][nu
 }
 
 function compactQuotaDetails(quota: NonNullable<TuiSidebarAccount["quota"]>, options: TuiAccountSidebarOptions): SidebarTextFragment[] {
-	const primary = quota.limits.find(({ label, windowMinutes }) => windowMinutes === 300 || label.toLowerCase() === "5h");
-	const weekly = quota.limits.find(({ label, windowMinutes }) => windowMinutes === 10080 || /^(weekly|7d)$/i.test(label));
+	const primary = options.showFiveHour ? quota.limits.find(isFiveHourQuotaWindow) : undefined;
+	const weekly = quota.limits.find(isWeeklyQuotaWindow);
+	if (!primary && !weekly) return [{ text: "\n  quota unavailable", tone: "muted" }];
 	const mode = options.quotaDisplay ?? "free";
-	const weeklyDetail = quotaDetail(weekly, mode);
+	const weeklyDetail = weekly && quotaDetail(weekly, mode);
 	const reset = options.showResetTimes ? formatResetCountdown(weekly?.resetAtMs, options.now ?? Date.now(), true) : undefined;
-	if (!options.showQuota && !reset) return [];
-	return [
-		{ text: "\n  (", tone: "muted" },
-		...(options.showQuota ? [quotaDetail(primary, mode), { text: "/", tone: "muted" } as const, weeklyDetail] : []),
-		...(reset ? [{ ...weeklyDetail, text: `${options.showQuota ? " " : ""}${reset}` }] : []),
-		{ text: ")", tone: "muted" },
-	];
+	const details: SidebarTextFragment[] = [];
+	if (options.showQuota && primary) details.push(quotaDetail(primary, mode));
+	if (options.showQuota && weeklyDetail) {
+		if (details.length > 0) details.push({ text: "/", tone: "muted" });
+		details.push({ ...weeklyDetail, bold: weeklyDetail.text !== "?" });
+	}
+	if (reset) details.push({ text: `${details.length > 0 ? " " : ""}${reset}`, tone: weeklyDetail?.tone });
+	return details.length > 0 ? [{ text: "\n  ", tone: "muted" }, ...details] : [];
 }
 
 /** Format cached display data only; this never fetches quota or credentials. */

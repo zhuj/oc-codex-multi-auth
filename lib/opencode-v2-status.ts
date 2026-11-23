@@ -36,6 +36,7 @@ import { getCurrentProjectRoot } from "./storage/state.js";
 import { createUsageAccountFingerprint } from "./codex-usage.js";
 import { resolveDisplayEmail } from "./account-display.js";
 import { resolveAccountShortName } from "./account-short-name.js";
+import { isFiveHourQuotaWindow, isWeeklyQuotaWindow } from "./quota-windows.js";
 import { displayWidth, sanitizeDisplayText } from "./ui/display-text.js";
 
 // Kept for callers of the old test hook. The shared fetcher now owns the budget.
@@ -168,7 +169,10 @@ export async function readV2Status({ width }: { width: number }) {
 		statusColor: status.color,
 		statusTone: current?.screen === "active" || !overview ? resolveQuotaPromptTone(quota)
 			: poolTone,
-		sidebar: { enabled: sidebar.enabled, showQuota: sidebar.showQuota, showResetTimes: sidebar.showResetTimes, color: sidebar.color },
+		sidebar: {
+			enabled: sidebar.enabled, showQuota: sidebar.showQuota, showResetTimes: sidebar.showResetTimes,
+			showFiveHour: sidebar.showFiveHour, color: sidebar.color,
+		},
 		accountStorage: getCurrentProjectRoot() ? "project" as const : "global" as const,
 		accounts: accounts.map((account, index) => {
 			const shortName = resolveAccountShortName(account, index + 1);
@@ -183,7 +187,8 @@ export async function readV2Status({ width }: { width: number }) {
 				// OpenCode's JSON encoder rejects explicit undefined, even in optional fields.
 				...(value && { quota: {
 					// Explicit allowlist: do not send cache identity or read-error text.
-					limits: value.limits.map((limit) => ({
+					limits: value.limits.filter((limit) => isWeeklyQuotaWindow(limit) ||
+						(sidebar.showFiveHour && isFiveHourQuotaWindow(limit))).map((limit) => ({
 						label: sanitizeDisplayText(limit.label) ?? "quota",
 						leftPercent: limit.leftPercent,
 						...(limit.usedPercent !== undefined && { usedPercent: limit.usedPercent }),

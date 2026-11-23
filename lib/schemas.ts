@@ -39,6 +39,7 @@ export const PluginConfigSchema = z.object({
 		accountNames: z.enum(["short", "full", "number", "none"]).optional(),
 		showQuota: z.boolean().optional(),
 		showResetTimes: z.boolean().optional(),
+		showFiveHour: z.boolean().optional(),
 		color: z.string().transform((value) => normalizeTuiColor(value, "default")).catch("default").optional(),
 	}).optional(),
 	quotaRefresh: z.object({

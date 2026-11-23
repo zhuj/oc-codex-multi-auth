@@ -191,16 +191,30 @@ it("passes resetsMinUsedPercent to the V2 resets screen", async () => {
 describe("V2 configurable identities and sidebar quota", () => {
 	afterEach(() => { mocks.realFormat = false; });
 
+	it.each([undefined, true])("includes the 5h window in sidebar data only when opted in (%s)", async (showFiveHour) => {
+		const account = mocks.pool?.accounts[1];
+		if (!account) throw new Error("Missing account fixture");
+		if (showFiveHour) mocks.config = { quotaSidebar: { showFiveHour } };
+		const limits = [{ label: "5h", leftPercent: 45 }, { label: "weekly", leftPercent: 67 }];
+		mocks.overview.mockResolvedValue({ version: 1, fetchedAt: Date.now(), accounts: [
+			{ index: 2, fingerprint: createUsageAccountFingerprint(account), limits },
+		] });
+		const output = CodexStatusRpc.methods.status.output.parse(await readV2Status({ width: 100 }));
+		expect(output.sidebar?.showFiveHour).toBe(showFiveHour ?? false);
+		expect(output.accounts[1]?.quota?.limits).toEqual(showFiveHour ? limits : limits.slice(1));
+		expect(mocks.promptStatus).toHaveBeenLastCalledWith(expect.objectContaining({ quota: expect.objectContaining({ limits }) }));
+	});
+
 	it("omits absent quota and nested fields from the JSON RPC response", async () => {
 		const account = mocks.pool?.accounts[1];
 		if (!account) throw new Error("Missing account fixture");
 		mocks.overview.mockResolvedValue({ version: 1, fetchedAt: Date.now(), accounts: [
-			{ index: 2, fingerprint: createUsageAccountFingerprint(account), limits: [{ label: "5h", leftPercent: null, resetAtMs: 0 }] },
+			{ index: 2, fingerprint: createUsageAccountFingerprint(account), limits: [{ label: "weekly", leftPercent: null, resetAtMs: 0 }] },
 		] });
 		const output = CodexStatusRpc.methods.status.output.parse(await readV2Status({ width: 100 }));
 		expect(z.json().safeParse({ output }).success).toBe(true);
 		expect(output.accounts[0]).not.toHaveProperty("quota");
-		expect(output.accounts[1]?.quota?.limits).toStrictEqual([{ label: "5h", leftPercent: null, resetAtMs: 0 }]);
+		expect(output.accounts[1]?.quota?.limits).toStrictEqual([{ label: "weekly", leftPercent: null, resetAtMs: 0 }]);
 	});
 
 	it("shows stored short names even with no quota and picks up account edits", async () => {
@@ -229,6 +243,7 @@ describe("V2 configurable identities and sidebar quota", () => {
 	});
 
 	it("merges newer serving-account headers without replacing them with the selected account's quota", async () => {
+		mocks.config = { quotaSidebar: { showFiveHour: true } };
 		const now = Date.now();
 		const firstFingerprint = createUsageAccountFingerprint(mocks.pool!.accounts[0]!);
 		const secondFingerprint = createUsageAccountFingerprint(mocks.pool!.accounts[1]!);
@@ -249,6 +264,7 @@ describe("V2 configurable identities and sidebar quota", () => {
 	});
 
 	it("uses the selected project's account while sharing matching account quota observations", async () => {
+		mocks.config = { quotaSidebar: { showFiveHour: true } };
 		mocks.projectRoot = "/tmp/project";
 		const now = Date.now();
 		mocks.overview.mockResolvedValue({ version: 1, fetchedAt: now, accounts: [
@@ -263,6 +279,7 @@ describe("V2 configurable identities and sidebar quota", () => {
 	});
 
 	it("remaps current account indices and excludes disabled or foreign rows from aggregation", async () => {
+		mocks.config = { quotaSidebar: { showFiveHour: true } };
 		const now = Date.now();
 		mocks.quotaStatus = { mode: "resets" };
 		mocks.overview.mockResolvedValue({ version: 1, fetchedAt: now, accounts: [
@@ -283,7 +300,7 @@ describe("V2 configurable identities and sidebar quota", () => {
 		mocks.quotaStatus = { color: "accent" };
 		mocks.overview.mockResolvedValue({ version: 1, fetchedAt: now - 700_000, accounts: [
 			{ index: 2, fingerprint: createUsageAccountFingerprint(mocks.pool!.accounts[1]!), fetchedAt: now - 700_000,
-				readFailedAt: now - 1_000, readError: "FAKE_SECRET", limits: [{ label: "5h", leftPercent: null }] },
+				readFailedAt: now - 1_000, readError: "FAKE_SECRET", limits: [{ label: "weekly", leftPercent: null }] },
 		] });
 		const result = await readV2Status({ width: 120 });
 		expect(result.accounts[0]?.quota).toBeUndefined();

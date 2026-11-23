@@ -37,18 +37,18 @@ describe("configurable TUI account display", () => {
 	it("defaults to compact names, native colors, and a bounded shared refresh", () => {
 		const config = PluginConfigSchema.parse({});
 		expect(getQuotaStatus(config)).toMatchObject({ activeAccountName: "short", accountNames: "number", color: "auto" });
-		expect(getQuotaSidebar(config)).toEqual({ enabled: true, accountNames: "short", showQuota: true, showResetTimes: true, color: "default" });
+		expect(getQuotaSidebar(config)).toEqual({ enabled: true, accountNames: "short", showQuota: true, showResetTimes: true, showFiveHour: false, color: "default" });
 		expect(getQuotaRefresh(config)).toEqual({ enabled: true, intervalMs: 600_000 });
 	});
 
 	it("round-trips independent name, sidebar, color and polling preferences", () => {
 		const config = PluginConfigSchema.parse({
 			quotaStatus: { activeAccountName: "none", accountNames: "short", color: "#aBc123" },
-			quotaSidebar: { enabled: false, accountNames: "full", showQuota: false, showResetTimes: true, color: "accent" },
+			quotaSidebar: { enabled: false, accountNames: "full", showQuota: false, showResetTimes: true, showFiveHour: true, color: "accent" },
 			quotaRefresh: { enabled: false, intervalMs: 1_800_000 },
 		});
 		expect(getQuotaStatus(config)).toMatchObject({ activeAccountName: "none", accountNames: "short", color: "#aBc123" });
-		expect(getQuotaSidebar(config)).toEqual({ enabled: false, accountNames: "full", showQuota: false, showResetTimes: true, color: "accent" });
+		expect(getQuotaSidebar(config)).toEqual({ enabled: false, accountNames: "full", showQuota: false, showResetTimes: true, showFiveHour: true, color: "accent" });
 		expect(getQuotaRefresh(config)).toEqual({ enabled: false, intervalMs: 1_800_000 });
 	});
 

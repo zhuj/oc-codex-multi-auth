@@ -81,6 +81,7 @@ export function setupV2Tui(context: Plugin.Context) {
 						glyphs, quotaDisplay: result.quotaDisplay,
 						showQuota: result.sidebar?.showQuota ?? false,
 						showResetTimes: result.sidebar?.showResetTimes ?? false,
+						showFiveHour: result.sidebar?.showFiveHour ?? false,
 						// Count down from cached timestamps on the existing RPC
 						// refresh, without another timer or any provider request.
 						now: Date.now(),

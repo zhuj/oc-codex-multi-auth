@@ -162,6 +162,7 @@ config `fallbackOnUnsupportedCodexModel` > `strict`.
 | `accountNames` | (file only) | `short` \| `full` \| `number` \| `none` | `short` | — | display name; account index always remains |
 | `showQuota` | (file only) | boolean | `true` | — | per-window percentages using quotaDisplay |
 | `showResetTimes` | (file only) | boolean | `true` | — | per-window cached reset countdowns, independently of percentages |
+| `showFiveHour` | (file only) | boolean | `false` | — | include the 5-hour window in V2 sidebar quota data; weekly is the default |
 | `color` | (file only) | semantic name or `#RRGGBB` | `default` | native colors only | sidebar foreground |
 
 Both color settings accept `auto`, `default`, `muted`, `accent`, `success`,

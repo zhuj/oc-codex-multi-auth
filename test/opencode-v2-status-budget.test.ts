@@ -150,9 +150,9 @@ describe("V2 status service request budget", () => {
 		expect(initial[0]?.accounts).toHaveLength(5);
 		expect(initial[0]?.accounts[3]?.enabled).toBe(false);
 		expect(initial[0]?.accounts[3]).not.toHaveProperty("quota");
-		expect(initial.every((result) => result.accounts[0]?.quota?.limits[0]?.leftPercent === 60)).toBe(true);
+		expect(initial.every((result) => result.accounts[0]?.quota?.limits.map(({ leftPercent }) => leftPercent).join() === "30")).toBe(true);
 		const initialSidebar = formatTuiAccountSidebar(initial[0]!.accounts, { showQuota: true, showResetTimes: true, now: NOW });
-		expect(initialSidebar).toContain("(5h: 60% in 5m)");
+		expect(initialSidebar).toContain("(7d: 30% in 2d)");
 
 		const sameConfig = mocks.config;
 		const active = mocks.pool?.accounts[0];
@@ -160,6 +160,7 @@ describe("V2 status service request budget", () => {
 		active.shortName = "studio";
 		mocks.config.quotaStatus!.color = "#12Ab34";
 		mocks.config.quotaSidebar!.color = "accent";
+		mocks.config.quotaSidebar!.showFiveHour = true;
 		mocks.config.quotaDisplay = "used";
 		// Even an inadmissibly short interval cannot bypass the minimum budget.
 		mocks.config.quotaRefresh!.intervalMs = 1;
@@ -219,7 +220,7 @@ describe("V2 status service request budget", () => {
 			version: TUI_QUOTA_CACHE_VERSION, fetchedAt: NOW - INTERVAL,
 			accounts: mocks.pool!.accounts.map((row, index) => ({
 				fingerprint: createUsageAccountFingerprint(row), index: index + 1, fetchedAt: NOW - INTERVAL,
-				limits: [{ label: "5h", leftPercent: 25, resetAtMs: NOW + 60_000 }],
+				limits: [{ label: "weekly", leftPercent: 25, resetAtMs: NOW + 60_000 }],
 			})),
 		}, overviewPath());
 		const cached = await readMany();
@@ -236,7 +237,7 @@ describe("V2 status service request budget", () => {
 		const active = mocks.pool!.accounts[0]!;
 		await writeTuiQuotaSnapshot({
 			version: TUI_QUOTA_CACHE_VERSION, fingerprint: createUsageAccountFingerprint(active), fetchedAt: NOW, source: "headers",
-			limits: [{ label: "5h", leftPercent: 80, resetAtMs: NOW + 60_000 }],
+			limits: [{ label: "weekly", leftPercent: 80, resetAtMs: NOW + 60_000 }],
 		});
 		mocks.config.quotaSidebar!.enabled = false;
 		const hidden = await readMany();
@@ -251,7 +252,7 @@ describe("V2 status service request budget", () => {
 		const resetOnly = await readMany();
 		expect(resetOnly[0]?.sidebar).toMatchObject({ enabled: true, showQuota: false, showResetTimes: true });
 		expect(fetchMock).toHaveBeenCalledTimes(ENABLED_IDS.length);
-		expect(resetOnly[0]?.accounts[1]?.quota?.limits[0]?.resetAtMs).toBe(NOW + 5 * 60_000);
+		expect(resetOnly[0]?.accounts[1]?.quota?.limits[0]?.resetAtMs).toBe(NOW + 2 * 86_400_000);
 		expect(requestedAccountIds()).not.toContain("FAKE_ACCOUNT_DISABLED");
 	});
 });
